@@ -4,6 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.v1.router import v1_router
 from app.db.base import Base
 from app.db.session import engine
+import app.db.models  # noqa: F401 — 确保所有 ORM 模型在 create_all 前注册
 
 
 @asynccontextmanager

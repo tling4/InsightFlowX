@@ -1,6 +1,9 @@
 # env
 *.env
 
+# test
+*.pytest_cache
+
 # personal 
 notice.md
 CLAUDE.md

@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(xargs -I {} bash -c 'echo \"=== {} ===\" && head -30 {}')",
+      "Bash(ls -la /Volumes/)",
+      "Bash(ls -la /mnt/)",
+      "Bash(xargs wc -l)",
+      "Bash(python3 -c \"import sys,json; data=json.load\\(sys.stdin\\); text=data[0]['text']; print\\(text[:8000]\\)\")",
+      "Bash(python3 -c \"import sys,json; data=json.load\\(sys.stdin\\); text=data[0]['text']; print\\(text[8000:16000]\\)\")",
+      "Bash(python3 -c \"import sys,json; data=json.load\\(sys.stdin\\); text=data[0]['text']; print\\(text[16000:24000]\\)\")",
+      "Bash(python3 -c \"import sys,json; data=json.load\\(sys.stdin\\); text=data[0]['text']; print\\(text[24000:]\\)\")",
+      "Bash(python3 *)",
+      "Bash(python *)",
+      "Bash(pip install *)",
+      "Bash(uvicorn app.main:app --host 0.0.0.0 --port 8000)",
+      "Bash(curl -s http://localhost:8000/docs)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:8000/docs)",
+      "Bash(curl *)"
+    ]
+  }
+}

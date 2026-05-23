@@ -10,7 +10,7 @@ from app.services.interview_service import (
     stream_interview_response,
     get_message_history
 )
-from app.services.workflow_service import get_workflow_by_id
+from app.services.workflow_service import get_workflow_by_id, confirm_interview
 
 router = APIRouter(prefix="/workflows/{workflow_id}/interview", tags=["interview"])
 # api/v1/workflows/{workflow_id}/interview/history
@@ -52,3 +52,16 @@ async def interview_stream(
             "X-Accel-Buffering": "no"
         }
     )
+
+
+@router.post("/confirm")
+async def confirm_interview_config(
+    workflow_id: str,
+    current_user: UserResponse = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """确认访谈配置已完成。"""
+    workflow = await confirm_interview(db, workflow_id, current_user.id)
+    if not workflow:
+        raise HTTPException(status_code=400, detail="工作流不存在、状态不允许确认或配置未完成")
+    return {"workflow_id": str(workflow.id), "status": workflow.status, "config": workflow.config}

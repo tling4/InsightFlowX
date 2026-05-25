@@ -1,10 +1,15 @@
+import logging
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from app.api.v1.router import v1_router
 from app.db.base import Base
 from app.db.session import engine
+from app.exceptions import AppException
 import app.db.models  # noqa: F401 — 确保所有 ORM 模型在 create_all 前注册
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -24,5 +29,31 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(AppException)
+async def app_exception_handler(request: Request, exc: AppException):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "error_code": exc.error_code,
+            "message": exc.message,
+            "details": exc.details,
+        },
+    )
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    logger.exception(f"Unhandled exception on {request.method} {request.url.path}: {exc}")
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error_code": "INTERNAL_ERROR",
+            "message": "服务器内部错误",
+            "details": None,
+        },
+    )
+
 
 app.include_router(v1_router)

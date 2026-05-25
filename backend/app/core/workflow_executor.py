@@ -7,8 +7,20 @@ from app.core.orchestrator import compile_workflow_graph
 from app.services.event_service import EventLogger
 from app.services.sse_service import sse_manager
 from app.schemas.event import EventType
+from app.exceptions import AppException
+from app.core.node_executor import NodeFatalError
 
 logger = logging.getLogger(__name__)
+
+
+def _extract_error_info(e: Exception) -> tuple[str, str, dict | None]:
+    """从异常中提取 error_code、message、details。"""
+    if isinstance(e, NodeFatalError) and isinstance(e.last_error, AppException):
+        app_err = e.last_error
+        return app_err.error_code, app_err.message, app_err.details
+    if isinstance(e, AppException):
+        return e.error_code, e.message, e.details
+    return "EXECUTION_ERROR", str(e)[:1000], None
 
 
 async def run_workflow(workflow_id: uuid.UUID) -> None:
@@ -79,17 +91,24 @@ async def run_workflow(workflow_id: uuid.UUID) -> None:
             try:
                 await db.rollback()
                 workflow.status = "failed"
-                workflow.error_message = str(e)[:1000]
+
+                error_code, error_message, error_details = _extract_error_info(e)
+                workflow.error_message = error_message
                 await db.commit()
 
                 await event_logger.log(
                     event_type=EventType.WORKFLOW_FAILED,
-                    payload={"error_message": str(e)[:500]},
+                    payload={
+                        "error_code": error_code,
+                        "error_message": error_message,
+                        "error_details": error_details,
+                    },
                     node_name="__workflow__",
                 )
                 await sse_manager.broadcast(workflow_id, {
                     "event_type": EventType.WORKFLOW_FAILED.value,
-                    "error_message": str(e)[:200],
+                    "error_code": error_code,
+                    "error_message": error_message[:200],
                 })
             except Exception:
                 logger.exception(f"工作流 {workflow_id} 错误处理也失败")

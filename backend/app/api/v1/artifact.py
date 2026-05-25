@@ -1,4 +1,5 @@
 import uuid as _uuid
+from urllib.parse import quote
 from fastapi import APIRouter, Depends
 from fastapi.responses import PlainTextResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -9,6 +10,15 @@ from app.db.queries.artifact_queries import get_workflow_artifacts, get_artifact
 from app.exceptions import WorkflowNotFoundError, ArtifactNotFoundError
 
 router = APIRouter(tags=["artifacts"])
+
+
+def _content_disposition_filename(title: str) -> str:
+    ascii_name = "".join(ch if ch.isascii() and (ch.isalnum() or ch in "-_.") else "_" for ch in title).strip("_")
+    if not ascii_name:
+        ascii_name = "artifact"
+    ascii_filename = f"{ascii_name}.md"
+    utf8_filename = quote(f"{title}.md")
+    return f"attachment; filename=\"{ascii_filename}\"; filename*=UTF-8''{utf8_filename}"
 
 
 @router.get("/workflows/{workflow_id}/artifacts")
@@ -79,5 +89,5 @@ async def download_artifact(
     return PlainTextResponse(
         content=markdown,
         media_type="text/markdown",
-        headers={"Content-Disposition": f'attachment; filename="{artifact.title}.md"'},
+        headers={"Content-Disposition": _content_disposition_filename(artifact.title)},
     )

@@ -1,3 +1,6 @@
+# MacOS tmp file
+.DS_Store
+
 # env
 *.env
 

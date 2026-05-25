@@ -6,10 +6,11 @@ from app.agents.collection_agent import CollectionAgent
 from app.agents.analysis_agent import AnalysisAgent
 from app.agents.report_agent import ReportAgent
 from app.agents.review_agent import ReviewAgent
-from app.core.node_executor import execute_with_retry
+from app.core.node_executor import execute_with_retry, NodeFatalError
 from app.services.event_service import EventLogger
 from app.db.models.workflow_node_state import WorkflowNodeState
 from app.db.models.artifact import Artifact
+from app.exceptions import AppException
 
 _collection_agent = CollectionAgent()
 _analysis_agent = AnalysisAgent()
@@ -79,17 +80,40 @@ def _sanitize_for_json(state: dict) -> dict:
     return sanitized
 
 
+async def _execute_node(
+    db: AsyncSession,
+    workflow_id: uuid.UUID,
+    node_name: str,
+    state: dict,
+    event_logger: EventLogger,
+    agent_run,
+) -> dict:
+    """执行节点并保存 state（成功或失败）。"""
+    node_logger = event_logger.with_node(node_name, state.get("revision_count", 0))
+    start = time.time()
+    try:
+        result = await execute_with_retry(agent_run, state, node_name, node_logger, workflow_id)
+    except NodeFatalError as e:
+        duration_ms = int((time.time() - start) * 1000)
+        err_msg = str(e.last_error)
+        if isinstance(e.last_error, AppException):
+            err_msg = e.last_error.message
+        await _save_node_state(
+            db, workflow_id, node_name,
+            state.get("revision_count", 0), state, duration_ms,
+            is_error=True, error_message=err_msg,
+        )
+        raise
+    duration_ms = int((time.time() - start) * 1000)
+    merged = {**state, **result}
+    await _save_node_state(db, workflow_id, node_name,
+                           state.get("revision_count", 0), merged, duration_ms)
+    return result
+
+
 def make_collection_node(db: AsyncSession, workflow_id: uuid.UUID, event_logger: EventLogger):
     async def collection_node(state: dict) -> dict:
-        node_logger = event_logger.with_node("information_collection", state.get("revision_count", 0))
-        start = time.time()
-        result = await execute_with_retry(
-            _collection_agent.run, state, "information_collection", node_logger, workflow_id,
-        )
-        duration_ms = int((time.time() - start) * 1000)
-        merged = {**state, **result}
-        await _save_node_state(db, workflow_id, "information_collection",
-                               state.get("revision_count", 0), merged, duration_ms)
+        result = await _execute_node(db, workflow_id, "information_collection", state, event_logger, _collection_agent.run)
         if result.get("raw_data"):
             await _save_artifact(db, workflow_id, "collection_raw",
                                  "采集原始数据", result["raw_data"], "information_collection")
@@ -99,15 +123,7 @@ def make_collection_node(db: AsyncSession, workflow_id: uuid.UUID, event_logger:
 
 def make_analysis_node(db: AsyncSession, workflow_id: uuid.UUID, event_logger: EventLogger):
     async def analysis_node(state: dict) -> dict:
-        node_logger = event_logger.with_node("analysis", state.get("revision_count", 0))
-        start = time.time()
-        result = await execute_with_retry(
-            _analysis_agent.run, state, "analysis", node_logger, workflow_id,
-        )
-        duration_ms = int((time.time() - start) * 1000)
-        merged = {**state, **result}
-        await _save_node_state(db, workflow_id, "analysis",
-                               state.get("revision_count", 0), merged, duration_ms)
+        result = await _execute_node(db, workflow_id, "analysis", state, event_logger, _analysis_agent.run)
         config = state.get("config", {})
         target = config.get("target_product", "") if isinstance(config, dict) else ""
         for art_type, art_key in [
@@ -126,15 +142,7 @@ def make_analysis_node(db: AsyncSession, workflow_id: uuid.UUID, event_logger: E
 
 def make_report_node(db: AsyncSession, workflow_id: uuid.UUID, event_logger: EventLogger):
     async def report_node(state: dict) -> dict:
-        node_logger = event_logger.with_node("report_writing", state.get("revision_count", 0))
-        start = time.time()
-        result = await execute_with_retry(
-            _report_agent.run, state, "report_writing", node_logger, workflow_id,
-        )
-        duration_ms = int((time.time() - start) * 1000)
-        merged = {**state, **result}
-        await _save_node_state(db, workflow_id, "report_writing",
-                               state.get("revision_count", 0), merged, duration_ms)
+        result = await _execute_node(db, workflow_id, "report_writing", state, event_logger, _report_agent.run)
         report_data = result.get("report")
         if report_data:
             title = report_data.get("title", "竞品分析报告") if isinstance(report_data, dict) else "竞品分析报告"
@@ -147,14 +155,6 @@ def make_report_node(db: AsyncSession, workflow_id: uuid.UUID, event_logger: Eve
 
 def make_review_node(db: AsyncSession, workflow_id: uuid.UUID, event_logger: EventLogger):
     async def review_node(state: dict) -> dict:
-        node_logger = event_logger.with_node("review", state.get("revision_count", 0))
-        start = time.time()
-        result = await execute_with_retry(
-            _review_agent.run, state, "review", node_logger, workflow_id,
-        )
-        duration_ms = int((time.time() - start) * 1000)
-        merged = {**state, **result}
-        await _save_node_state(db, workflow_id, "review",
-                               state.get("revision_count", 0), merged, duration_ms)
+        result = await _execute_node(db, workflow_id, "review", state, event_logger, _review_agent.run)
         return result
     return review_node

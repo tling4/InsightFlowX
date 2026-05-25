@@ -1,13 +1,12 @@
 import uuid as _uuid
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from fastapi.responses import PlainTextResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
 from app.db.session import get_async_session
 from app.dependencies import get_current_user
-from app.db.models.artifact import Artifact
-from app.db.models.workflow import Workflow
-from app.services.workflow_service import get_workflow_by_id
+from app.db.queries.workflow_queries import get_workflow_by_id
+from app.db.queries.artifact_queries import get_workflow_artifacts, get_artifact_by_id
+from app.exceptions import WorkflowNotFoundError, ArtifactNotFoundError
 
 router = APIRouter(tags=["artifacts"])
 
@@ -21,11 +20,8 @@ async def list_artifacts(
     """获取工作流产物列表。"""
     workflow = await get_workflow_by_id(db, workflow_id, current_user.id)
     if not workflow:
-        raise HTTPException(status_code=404, detail="工作流不存在")
-    result = await db.execute(
-        select(Artifact).where(Artifact.workflow_id == workflow.id).order_by(Artifact.created_at)
-    )
-    artifacts = result.scalars().all()
+        raise WorkflowNotFoundError(workflow_id)
+    artifacts = await get_workflow_artifacts(db, workflow.id)
     return [
         {
             "id": str(a.id),
@@ -46,15 +42,12 @@ async def get_artifact_detail(
     db: AsyncSession = Depends(get_async_session),
 ):
     """获取单个产物详情（含 content JSON）。"""
-    result = await db.execute(select(Artifact).where(Artifact.id == artifact_id))
-    artifact = result.scalar_one_or_none()
+    artifact = await get_artifact_by_id(db, artifact_id)
     if not artifact:
-        raise HTTPException(status_code=404, detail="产物不存在")
-    wf_result = await db.execute(
-        select(Workflow).where(Workflow.id == artifact.workflow_id, Workflow.owner_id == current_user.id)
-    )
-    if not wf_result.scalar_one_or_none():
-        raise HTTPException(status_code=404, detail="产物不存在")
+        raise ArtifactNotFoundError(str(artifact_id))
+    ownership_check = await get_workflow_by_id(db, artifact.workflow_id, current_user.id)
+    if not ownership_check:
+        raise WorkflowNotFoundError(str(artifact.workflow_id))
     return {
         "id": str(artifact.id),
         "artifact_type": artifact.artifact_type,
@@ -74,15 +67,12 @@ async def download_artifact(
     db: AsyncSession = Depends(get_async_session),
 ):
     """下载产物 Markdown 文件。"""
-    result = await db.execute(select(Artifact).where(Artifact.id == artifact_id))
-    artifact = result.scalar_one_or_none()
+    artifact = await get_artifact_by_id(db, artifact_id)
     if not artifact:
-        raise HTTPException(status_code=404, detail="产物不存在")
-    wf_result = await db.execute(
-        select(Workflow).where(Workflow.id == artifact.workflow_id, Workflow.owner_id == current_user.id)
-    )
-    if not wf_result.scalar_one_or_none():
-        raise HTTPException(status_code=404, detail="产物不存在")
+        raise ArtifactNotFoundError(str(artifact_id))
+    ownership_check = await get_workflow_by_id(db, artifact.workflow_id, current_user.id)
+    if not ownership_check:
+        raise WorkflowNotFoundError(str(artifact.workflow_id))
     markdown = artifact.content_text or ""
     if not markdown and artifact.artifact_type == "report":
         markdown = artifact.content.get("full_markdown", "") if isinstance(artifact.content, dict) else ""

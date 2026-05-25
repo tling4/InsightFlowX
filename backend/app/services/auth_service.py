@@ -3,9 +3,10 @@ from datetime import datetime, timedelta, timezone
 import bcrypt
 from jose import jwt, JWTError
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
 from app.config import get_settings
 from app.db.models.user import User
+from app.db.queries.user_queries import get_user_by_email, get_user_by_username, get_user_by_id
+from app.exceptions import InvalidCredentialsError
 from app.schemas.auth import UserRegister
 
 settings = get_settings()
@@ -46,23 +47,8 @@ async def create_user(db: AsyncSession, data: UserRegister) -> User:
     return user
 
 
-async def get_user_by_email(db: AsyncSession, email: str) -> User | None:
-    result = await db.execute(select(User).where(User.email == email))
-    return result.scalar_one_or_none()
-
-
-async def get_user_by_username(db: AsyncSession, username: str) -> User | None:
-    result = await db.execute(select(User).where(User.username == username))
-    return result.scalar_one_or_none()
-
-
-async def authenticate_user(db: AsyncSession, email: str, password: str) -> User | None:
+async def authenticate_user(db: AsyncSession, email: str, password: str) -> User:
     user = await get_user_by_email(db, email)
     if not user or not verify_password(password, user.hashed_password):
-        return None
+        raise InvalidCredentialsError()
     return user
-
-
-async def get_user_by_id(db: AsyncSession, user_id: uuid.UUID) -> User | None:
-    result = await db.execute(select(User).where(User.id == user_id))
-    return result.scalar_one_or_none()

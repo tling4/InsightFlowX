@@ -2,6 +2,7 @@ import asyncio
 import logging
 from app.services.event_service import EventLogger
 from app.schemas.event import EventType
+from app.exceptions import AppException
 
 logger = logging.getLogger(__name__)
 
@@ -36,10 +37,11 @@ async def execute_with_retry(
         except Exception as e:
             last_error = e
             logger.warning(f"节点 {node_name} 第 {attempt} 次执行失败: {e}")
+            inner_code = e.error_code if isinstance(e, AppException) else type(e).__name__
             await event_logger.log(
                 event_type=EventType.NODE_ERROR,
                 payload={
-                    "error_code": type(e).__name__,
+                    "error_code": inner_code,
                     "error_message": str(e)[:500],
                     "retry_count": attempt,
                     "max_retries": MAX_RETRIES,

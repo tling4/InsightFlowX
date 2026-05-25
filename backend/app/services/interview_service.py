@@ -1,23 +1,16 @@
 import uuid
 from typing import List, AsyncGenerator
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
 from langchain_core.messages import HumanMessage, AIMessage, BaseMessage
 from tavily import AsyncTavilyClient
 from app.config import get_settings
-from app.db.models.workflow import InterviewMessageModel, Workflow
+from app.db.models.workflow import InterviewMessageModel
+from app.db.queries.workflow_queries import get_workflow_by_uuid, get_message_history
 from app.agents.interview_agent import InterviewAgent
 
 settings = get_settings()
 tavily_client = AsyncTavilyClient(api_key=settings.TAVILY_API_KEY)
 interview_agent = InterviewAgent()
-
-
-async def get_message_history(db: AsyncSession, workflow_id: uuid.UUID) -> List[InterviewMessageModel]:
-    result = await db.execute(
-        select(InterviewMessageModel).where(InterviewMessageModel.workflow_id == workflow_id).order_by(InterviewMessageModel.created_at)
-    )
-    return result.scalars().all()
 
 
 def convert_to_langchain_messages(history: List[InterviewMessageModel]) -> List[BaseMessage]:
@@ -76,8 +69,7 @@ async def stream_interview_response(
     is_complete = interview_agent.is_complete_signal(full_response)
 
     if config:
-        wf_result = await db.execute(select(Workflow).where(Workflow.id == workflow_id))
-        workflow = wf_result.scalar_one_or_none()
+        workflow = await get_workflow_by_uuid(db, workflow_id)
         if workflow:
             if not config.competitors:
                 config.competitors = await suggest_competitors(config.target_product, config.product_category)

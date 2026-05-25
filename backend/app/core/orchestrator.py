@@ -40,6 +40,7 @@ def compile_workflow_graph(
     db: AsyncSession,
     workflow_id: uuid.UUID,
     event_logger: EventLogger,
+    execution_attempt: int,
 ):
     """编译 LangGraph StateGraph。
 
@@ -51,10 +52,10 @@ def compile_workflow_graph(
     """
     graph = StateGraph(WorkflowState)
 
-    graph.add_node("information_collection", make_collection_node(db, workflow_id, event_logger))
-    graph.add_node("analysis", make_analysis_node(db, workflow_id, event_logger))
-    graph.add_node("report_writing", make_report_node(db, workflow_id, event_logger))
-    graph.add_node("review", make_review_node(db, workflow_id, event_logger))
+    graph.add_node("information_collection", make_collection_node(db, workflow_id, event_logger, execution_attempt))
+    graph.add_node("analysis", make_analysis_node(db, workflow_id, event_logger, execution_attempt))
+    graph.add_node("report_writing", make_report_node(db, workflow_id, event_logger, execution_attempt))
+    graph.add_node("review", make_review_node(db, workflow_id, event_logger, execution_attempt))
 
     graph.set_entry_point("information_collection")
 

@@ -11,6 +11,7 @@ async def get_events(
     workflow_id: uuid.UUID,
     node_name: Optional[str] = None,
     event_type: Optional[str] = None,
+    execution_attempt: Optional[int] = None,
     limit: int = 50,
     offset: int = 0,
 ) -> list[WorkflowEvent]:
@@ -19,6 +20,8 @@ async def get_events(
         stmt = stmt.where(WorkflowEvent.node_name == node_name)
     if event_type:
         stmt = stmt.where(WorkflowEvent.event_type == event_type)
+    if execution_attempt is not None:
+        stmt = stmt.where(WorkflowEvent.execution_attempt == execution_attempt)
     stmt = stmt.order_by(WorkflowEvent.seq).offset(offset).limit(limit)
     result = await db.execute(stmt)
     return list(result.scalars().all())
@@ -29,20 +32,23 @@ async def count_events(
     workflow_id: uuid.UUID,
     node_name: Optional[str] = None,
     event_type: Optional[str] = None,
+    execution_attempt: Optional[int] = None,
 ) -> int:
     stmt = select(sa_func.count(WorkflowEvent.id)).where(WorkflowEvent.workflow_id == workflow_id)
     if node_name:
         stmt = stmt.where(WorkflowEvent.node_name == node_name)
     if event_type:
         stmt = stmt.where(WorkflowEvent.event_type == event_type)
+    if execution_attempt is not None:
+        stmt = stmt.where(WorkflowEvent.execution_attempt == execution_attempt)
     result = await db.execute(stmt)
     return result.scalar_one()
 
 
-async def get_node_states(db: AsyncSession, workflow_id: uuid.UUID) -> list[WorkflowNodeState]:
-    result = await db.execute(
-        select(WorkflowNodeState)
-        .where(WorkflowNodeState.workflow_id == workflow_id)
-        .order_by(WorkflowNodeState.created_at)
-    )
+async def get_node_states(db: AsyncSession, workflow_id: uuid.UUID, execution_attempt: Optional[int] = None) -> list[WorkflowNodeState]:
+    stmt = select(WorkflowNodeState).where(WorkflowNodeState.workflow_id == workflow_id)
+    if execution_attempt is not None:
+        stmt = stmt.where(WorkflowNodeState.execution_attempt == execution_attempt)
+    stmt = stmt.order_by(WorkflowNodeState.created_at)
+    result = await db.execute(stmt)
     return list(result.scalars().all())

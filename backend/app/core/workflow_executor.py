@@ -45,7 +45,8 @@ async def run_workflow(workflow_id: uuid.UUID) -> None:
             logger.warning(f"工作流 {workflow_id} 状态为 {workflow.status}，跳过执行")
             return
 
-        event_logger = EventLogger(db, workflow_id)
+        execution_attempt = workflow.execution_attempt
+        event_logger = EventLogger(db, workflow_id, execution_attempt)
 
         await event_logger.log(
             event_type=EventType.WORKFLOW_START,
@@ -58,7 +59,7 @@ async def run_workflow(workflow_id: uuid.UUID) -> None:
         })
 
         try:
-            compiled_graph = compile_workflow_graph(db, workflow_id, event_logger)
+            compiled_graph = compile_workflow_graph(db, workflow_id, event_logger, execution_attempt)
 
             initial_state = {
                 "config": workflow.config,
@@ -100,7 +101,9 @@ async def run_workflow(workflow_id: uuid.UUID) -> None:
         except Exception as e:
             logger.exception(f"工作流 {workflow_id} 执行失败: {e}")
             try:
-                await db.rollback()
+                # 节点内部各自 commit，当前 session 无未提交变更，无需 rollback。
+                # 回滚由 execution_attempt 机制在逻辑层面完成：失败 attempt 的数据留存
+                # 供调试，后续 attempt 写入新 execution_attempt 号，互不干扰。
                 workflow.status = "failed"
 
                 error_code, error_message, error_details = _extract_error_info(e)

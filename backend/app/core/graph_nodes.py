@@ -25,6 +25,7 @@ _review_agent = ReviewAgent()
 async def _save_node_state(
     db: AsyncSession,
     workflow_id: uuid.UUID,
+    execution_attempt: int,
     node_name: str,
     iteration: int,
     state_snapshot: dict,
@@ -36,6 +37,7 @@ async def _save_node_state(
     ns = WorkflowNodeState(
         id=uuid.uuid4(),
         workflow_id=workflow_id,
+        execution_attempt=execution_attempt,
         node_name=node_name,
         iteration=iteration,
         state_snapshot=_sanitize_for_json(state_snapshot),
@@ -52,6 +54,7 @@ async def _save_node_state(
 async def _save_artifact(
     db: AsyncSession,
     workflow_id: uuid.UUID,
+    execution_attempt: int,
     artifact_type: str,
     title: str,
     content: dict,
@@ -61,6 +64,7 @@ async def _save_artifact(
     art = Artifact(
         id=uuid.uuid4(),
         workflow_id=workflow_id,
+        execution_attempt=execution_attempt,
         artifact_type=artifact_type,
         title=title,
         content=content,
@@ -92,6 +96,7 @@ def _sanitize_for_json(state: dict) -> dict:
 async def _execute_node(
     db: AsyncSession,
     workflow_id: uuid.UUID,
+    execution_attempt: int,
     node_name: str,
     state: dict,
     event_logger: EventLogger,
@@ -114,34 +119,34 @@ async def _execute_node(
         if isinstance(e.last_error, AppException):
             err_msg = e.last_error.message
         await _save_node_state(
-            db, workflow_id, node_name,
+            db, workflow_id, execution_attempt, node_name,
             state.get("revision_count", 0), state, duration_ms,
             is_error=True, error_message=err_msg,
         )
         raise
     duration_ms = int((time.time() - start) * 1000)
     merged = {**state, **result}
-    await _save_node_state(db, workflow_id, node_name,
+    await _save_node_state(db, workflow_id, execution_attempt, node_name,
                            state.get("revision_count", 0), merged, duration_ms)
     return result
 
 
 # closure node definition below
 # collection_node
-def make_collection_node(db: AsyncSession, workflow_id: uuid.UUID, event_logger: EventLogger):
+def make_collection_node(db: AsyncSession, workflow_id: uuid.UUID, event_logger: EventLogger, execution_attempt: int):
     async def collection_node(state: dict) -> dict:
-        result = await _execute_node(db, workflow_id, "information_collection", state, event_logger, _collection_agent.run)
+        result = await _execute_node(db, workflow_id, execution_attempt, "information_collection", state, event_logger, _collection_agent.run)
         if result.get("raw_data"):
-            await _save_artifact(db, workflow_id, "collection_raw",
+            await _save_artifact(db, workflow_id, execution_attempt, "collection_raw",
                                  "采集原始数据", result["raw_data"], "information_collection")
         return result
     return collection_node
 
 
 # analysis_node
-def make_analysis_node(db: AsyncSession, workflow_id: uuid.UUID, event_logger: EventLogger):
+def make_analysis_node(db: AsyncSession, workflow_id: uuid.UUID, event_logger: EventLogger, execution_attempt: int):
     async def analysis_node(state: dict) -> dict:
-        result = await _execute_node(db, workflow_id, "analysis", state, event_logger, _analysis_agent.run)
+        result = await _execute_node(db, workflow_id, execution_attempt, "analysis", state, event_logger, _analysis_agent.run)
         config = state.get("config", {})
         target = config.get("target_product", "") if isinstance(config, dict) else ""
         for art_type, art_key in [
@@ -152,29 +157,29 @@ def make_analysis_node(db: AsyncSession, workflow_id: uuid.UUID, event_logger: E
         ]:
             data = result.get(art_key)
             if data is not None:
-                await _save_artifact(db, workflow_id, art_type,
+                await _save_artifact(db, workflow_id, execution_attempt, art_type,
                                      f"{target} {art_type}", data, "analysis")
         return result
     return analysis_node
 
 
 # report node
-def make_report_node(db: AsyncSession, workflow_id: uuid.UUID, event_logger: EventLogger):
+def make_report_node(db: AsyncSession, workflow_id: uuid.UUID, event_logger: EventLogger, execution_attempt: int):
     async def report_node(state: dict) -> dict:
-        result = await _execute_node(db, workflow_id, "report_writing", state, event_logger, _report_agent.run)
+        result = await _execute_node(db, workflow_id, execution_attempt, "report_writing", state, event_logger, _report_agent.run)
         report_data = result.get("report")
         if report_data:
             title = report_data.get("title", "竞品分析报告") if isinstance(report_data, dict) else "竞品分析报告"
             markdown = report_data.get("full_markdown", "") if isinstance(report_data, dict) else ""
-            await _save_artifact(db, workflow_id, "report", title,
+            await _save_artifact(db, workflow_id, execution_attempt, "report", title,
                                  report_data, "report_writing", content_text=markdown)
         return result
     return report_node
 
 
 # review node
-def make_review_node(db: AsyncSession, workflow_id: uuid.UUID, event_logger: EventLogger):
+def make_review_node(db: AsyncSession, workflow_id: uuid.UUID, event_logger: EventLogger, execution_attempt: int):
     async def review_node(state: dict) -> dict:
-        result = await _execute_node(db, workflow_id, "review", state, event_logger, _review_agent.run)
+        result = await _execute_node(db, workflow_id, execution_attempt, "review", state, event_logger, _review_agent.run)
         return result
     return review_node

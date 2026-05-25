@@ -25,4 +25,5 @@ class WorkflowNodeState(Base):
     model_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
     is_error: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    execution_attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from sqlalchemy import String, DateTime, ForeignKey, Text
+from sqlalchemy import String, Integer, DateTime, ForeignKey, Text
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.types import JSON
@@ -21,5 +21,6 @@ class Artifact(Base):
     content_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     format_version: Mapped[str] = mapped_column(String(16), nullable=False, default="1.0")
     created_by_node: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    execution_attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

@@ -13,9 +13,10 @@ class EventLogger:
       - 后续仅在内存中递增，避免每次写入都查库
     """
 
-    def __init__(self, db: AsyncSession, workflow_id: uuid.UUID, node_name: str = "", iteration: int = 0):
+    def __init__(self, db: AsyncSession, workflow_id: uuid.UUID, execution_attempt: int = 1, node_name: str = "", iteration: int = 0):
         self.db = db
         self.workflow_id = workflow_id
+        self.execution_attempt = execution_attempt
         self.node_name = node_name
         self.iteration = iteration
         self._seq_counter: int | None = None
@@ -41,6 +42,7 @@ class EventLogger:
         event = WorkflowEvent(
             id=uuid.uuid4(),
             workflow_id=self.workflow_id,
+            execution_attempt=self.execution_attempt,
             node_name=node_name or self.node_name,
             iteration=iteration if iteration is not None else self.iteration,
             event_type=event_type.value,
@@ -53,6 +55,6 @@ class EventLogger:
 
     def with_node(self, node_name: str, iteration: int = 0) -> "EventLogger":
         """派生一个子 Logger，共享父 Logger 的 seq 计数器但使用不同的 node_name/iteration。"""
-        new_logger = EventLogger(self.db, self.workflow_id, node_name, iteration)
+        new_logger = EventLogger(self.db, self.workflow_id, self.execution_attempt, node_name, iteration)
         new_logger._seq_counter = self._seq_counter
         return new_logger

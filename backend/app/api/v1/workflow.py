@@ -98,6 +98,7 @@ async def retry_node_endpoint(
         raise InvalidStateTransitionError(workflow_id, workflow.status, "retry")
     workflow.status = "running"
     workflow.error_message = None
+    workflow.execution_attempt += 1
     await db.commit()
     background_tasks.add_task(run_workflow, workflow.id)
-    return {"workflow_id": str(workflow.id), "status": "running", "retry_node": node_name}
+    return {"workflow_id": str(workflow.id), "status": "running", "execution_attempt": workflow.execution_attempt, "retry_node": node_name}

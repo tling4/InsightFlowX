@@ -1,3 +1,6 @@
+# VSCode setting file
+.vscode
+
 # MacOS tmp file
 .DS_Store
 

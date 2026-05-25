@@ -1,3 +1,7 @@
+"""
+behavior definitions of nodes.
+"""
+
 import json
 import uuid
 import time
@@ -28,6 +32,7 @@ async def _save_node_state(
     is_error: bool = False,
     error_message: str | None = None,
 ) -> WorkflowNodeState:
+    """持久化节点执行快照到 WorkflowNodeState 表。"""
     ns = WorkflowNodeState(
         id=uuid.uuid4(),
         workflow_id=workflow_id,
@@ -68,7 +73,11 @@ async def _save_artifact(
 
 
 def _sanitize_for_json(state: dict) -> dict:
-    """移除不可 JSON 序列化的字段（如 LangChain BaseMessage 对象），并确保所有值可直接写入 JSON 列。"""
+    """移除不可 JSON 序列化的字段（如 LangChain BaseMessage 对象），并确保所有值可直接写入 JSON 列。
+
+    注意显式跳过 state["messages"]：LangGraph 的消息列表包含 BaseMessage 对象，
+    其序列化需 LangChain 的额外逻辑，不适合直接 JSON dump。
+    """
     sanitized = {}
     for k, v in state.items():
         if k == "messages":
@@ -88,7 +97,13 @@ async def _execute_node(
     event_logger: EventLogger,
     agent_run,
 ) -> dict:
-    """执行节点并保存 state（成功或失败）。"""
+    """执行节点并保存 state（成功或失败）。
+
+    统一封装：
+      - 成功：保存 state_snapshot，正常返回
+      - 失败（NodeFatalError）：保存 is_error=True 的节点状态并 re-raise
+        使上游 workflow_executor 可以捕获并记录 WORKFLOW_FAILED 事件
+    """
     node_logger = event_logger.with_node(node_name, state.get("revision_count", 0))
     start = time.time()
     try:
@@ -111,6 +126,8 @@ async def _execute_node(
     return result
 
 
+# closure node definition below
+# collection_node
 def make_collection_node(db: AsyncSession, workflow_id: uuid.UUID, event_logger: EventLogger):
     async def collection_node(state: dict) -> dict:
         result = await _execute_node(db, workflow_id, "information_collection", state, event_logger, _collection_agent.run)
@@ -121,6 +138,7 @@ def make_collection_node(db: AsyncSession, workflow_id: uuid.UUID, event_logger:
     return collection_node
 
 
+# analysis_node
 def make_analysis_node(db: AsyncSession, workflow_id: uuid.UUID, event_logger: EventLogger):
     async def analysis_node(state: dict) -> dict:
         result = await _execute_node(db, workflow_id, "analysis", state, event_logger, _analysis_agent.run)
@@ -140,6 +158,7 @@ def make_analysis_node(db: AsyncSession, workflow_id: uuid.UUID, event_logger: E
     return analysis_node
 
 
+# report node
 def make_report_node(db: AsyncSession, workflow_id: uuid.UUID, event_logger: EventLogger):
     async def report_node(state: dict) -> dict:
         result = await _execute_node(db, workflow_id, "report_writing", state, event_logger, _report_agent.run)
@@ -153,6 +172,7 @@ def make_report_node(db: AsyncSession, workflow_id: uuid.UUID, event_logger: Eve
     return report_node
 
 
+# review node
 def make_review_node(db: AsyncSession, workflow_id: uuid.UUID, event_logger: EventLogger):
     async def review_node(state: dict) -> dict:
         result = await _execute_node(db, workflow_id, "review", state, event_logger, _review_agent.run)

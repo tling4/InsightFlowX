@@ -13,7 +13,7 @@ class AnalysisAgent(BaseAgent):
     node_name = "analysis"
 
     async def run(self, state: dict, event_logger: EventLogger, workflow_id: uuid.UUID) -> dict:
-        """Stub：记录事件，返回空分析结果。"""
+        """Stub：分析节点。生成 feature_matrix / pricing / sentiment / swot 空结构，等待 LLM 集成。"""
         config = state.get("config", {})
         target = config.get("target_product", "") if isinstance(config, dict) else ""
 

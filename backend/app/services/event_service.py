@@ -6,7 +6,12 @@ from app.schemas.event import EventType
 
 
 class EventLogger:
-    """每个工作流执行实例化一个，管理事件写入和 seq 递增。"""
+    """每个工作流执行实例化一个，管理事件写入和 seq 递增。
+
+    seq 递增策略（lazy init）：
+      - 首次调用 _next_seq 时查询库中当前最大值作为起点
+      - 后续仅在内存中递增，避免每次写入都查库
+    """
 
     def __init__(self, db: AsyncSession, workflow_id: uuid.UUID, node_name: str = "", iteration: int = 0):
         self.db = db
@@ -47,6 +52,7 @@ class EventLogger:
         return event
 
     def with_node(self, node_name: str, iteration: int = 0) -> "EventLogger":
+        """派生一个子 Logger，共享父 Logger 的 seq 计数器但使用不同的 node_name/iteration。"""
         new_logger = EventLogger(self.db, self.workflow_id, node_name, iteration)
         new_logger._seq_counter = self._seq_counter
         return new_logger

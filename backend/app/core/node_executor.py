@@ -11,6 +11,7 @@ MAX_RETRIES = 3
 
 
 class NodeFatalError(Exception):
+    """节点在耗尽所有重试次数后仍然失败时抛出，携带最后一次异常供上层解包。"""
     def __init__(self, node: str, attempts: int, last_error: Exception):
         self.node = node
         self.attempts = attempts
@@ -25,7 +26,15 @@ async def execute_with_retry(
     event_logger: EventLogger,
     workflow_id,
 ) -> dict:
-    """带指数退避重试的节点执行器。"""
+    """带指数退避重试的节点执行器。
+
+    重试策略：
+      - 单次超时 300s (NODE_TIMEOUT)
+      - 最多 3 次 (MAX_RETRIES)
+      - 第 n 次重试前等待 2^n 秒
+      - 每次失败记录 NODE_ERROR 事件（携带业务 error_code）
+      - 所有重试耗尽后抛出 NodeFatalError
+    """
     last_error = None
     for attempt in range(1, MAX_RETRIES + 1):
         try:

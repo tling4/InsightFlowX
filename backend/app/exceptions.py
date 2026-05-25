@@ -1,5 +1,9 @@
 class AppException(Exception):
-    """Base for all business-logic exceptions."""
+    """业务异常基类。
+
+    与 FastAPI exception_handler 配合，自动转换为带 error_code 的统一 JSON 响应。
+    继承体系：所有业务异常继承此类，子类在 __init__ 中固化 error_code / status_code。
+    """
 
     def __init__(self, error_code: str, message: str, status_code: int, details: dict | None = None):
         self.error_code = error_code

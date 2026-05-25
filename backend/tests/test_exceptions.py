@@ -121,7 +121,7 @@ class TestGlobalExceptionHandler:
     @pytest.mark.asyncio
     async def test_register_duplicate_email(self, client: AsyncClient):
         """重复邮箱注册应返回 409 + DuplicateResourceError。"""
-        payload = {"username": "dupuser", "email": "dup@test.com", "password": "123456"}
+        payload = {"username": "dupuser", "email": "dup@test.com", "password": "12345678"}
         resp1 = await client.post("/api/v1/auth/register", json=payload)
         assert resp1.status_code == 201
 
@@ -137,11 +137,11 @@ class TestGlobalExceptionHandler:
         await client.post("/api/v1/auth/register", json={
             "username": "wftest",
             "email": "wftest@test.com",
-            "password": "123456",
+            "password": "12345678",
         })
         login_resp = await client.post("/api/v1/auth/login", json={
             "email": "wftest@test.com",
-            "password": "123456",
+            "password": "12345678",
         })
         token = login_resp.json()["access_token"]
 
@@ -161,16 +161,17 @@ class TestGlobalExceptionHandler:
         await client.post("/api/v1/auth/register", json={
             "username": "retrytest",
             "email": "retrytest@test.com",
-            "password": "123456",
+            "password": "12345678",
         })
         login_resp = await client.post("/api/v1/auth/login", json={
             "email": "retrytest@test.com",
-            "password": "123456",
+            "password": "12345678",
         })
         token = login_resp.json()["access_token"]
 
         wf_resp = await client.post(
-            "/api/v1/workflows?title=retry-test",
+            "/api/v1/workflows",
+            json={"title": "retry-test"},
             headers={"Authorization": f"Bearer {token}"},
         )
         workflow_id = wf_resp.json()["workflow_id"]
@@ -198,11 +199,11 @@ class TestGlobalExceptionHandler:
         await client.post("/api/v1/auth/register", json={
             "username": "err500",
             "email": "err500@test.com",
-            "password": "123456",
+            "password": "12345678",
         })
         login_resp = await client.post("/api/v1/auth/login", json={
             "email": "err500@test.com",
-            "password": "123456",
+            "password": "12345678",
         })
         token = login_resp.json()["access_token"]
 

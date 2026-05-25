@@ -11,7 +11,7 @@ class ReportAgent(BaseAgent):
     node_name = "report_writing"
 
     async def run(self, state: dict, event_logger: EventLogger, workflow_id: uuid.UUID) -> dict:
-        """Stub：记录事件，返回空报告。"""
+        """Stub：报告生成节点。返回空 ReportOutput，等待 LLM 集成。"""
         config = state.get("config", {})
         target = config.get("target_product", "未知产品") if isinstance(config, dict) else "未知产品"
 

@@ -6,7 +6,7 @@ from app.exceptions import WorkflowNotFoundError, InvalidStateTransitionError, C
 
 
 async def create_workflow(db: AsyncSession, owner_id: uuid.UUID, title: str) -> Workflow:
-    """创建工作流"""
+    """创建工作流，初始状态为 configuring。"""
     workflow = Workflow(
         id=uuid.uuid4(),
         owner_id=owner_id,
@@ -20,7 +20,7 @@ async def create_workflow(db: AsyncSession, owner_id: uuid.UUID, title: str) -> 
 
 
 async def confirm_interview(db: AsyncSession, workflow_id: str, owner_id: uuid.UUID) -> Workflow:
-    """确认访谈配置已完成。"""
+    """确认访谈配置已完成。要求状态为 configuring 且已配置 target_product。"""
     workflow = await get_workflow_by_id(db, workflow_id, owner_id)
     if not workflow:
         raise WorkflowNotFoundError(workflow_id)
@@ -48,7 +48,7 @@ async def start_workflow(db: AsyncSession, workflow_id: str, owner_id: uuid.UUID
 
 
 async def cancel_workflow(db: AsyncSession, workflow_id: str, owner_id: uuid.UUID) -> Workflow:
-    """取消工作流。"""
+    """取消工作流。已 completed / cancelled 状态不允许重复取消。"""
     workflow = await get_workflow_by_id(db, workflow_id, owner_id)
     if not workflow:
         raise WorkflowNotFoundError(workflow_id)

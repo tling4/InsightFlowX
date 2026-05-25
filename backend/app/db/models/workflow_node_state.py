@@ -9,6 +9,8 @@ from app.db.base import Base
 
 
 class WorkflowNodeState(Base):
+    """工作流节点执行快照。每次节点执行（包括失败）记录一份 state_snapshot 用于回溯。"""
+
     __tablename__ = "workflow_node_state"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)

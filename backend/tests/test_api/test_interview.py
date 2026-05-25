@@ -6,15 +6,16 @@ async def get_auth_token_and_create_workflow(client: AsyncClient):
     await client.post("/api/v1/auth/register", json={
         "username": "interview_test",
         "email": "intv_test@example.com",
-        "password": "123456"
+        "password": "12345678"
     })
     login_resp = await client.post("/api/v1/auth/login", json={
         "email": "intv_test@example.com",
-        "password": "123456"
+        "password": "12345678"
     })
     token = login_resp.json()["access_token"]
     wf_resp = await client.post(
-        "/api/v1/workflows?title=访谈测试项目",
+        "/api/v1/workflows",
+        json={"title": "访谈测试项目"},
         headers={"Authorization": f"Bearer {token}"}
     )
     workflow_id = wf_resp.json()["workflow_id"]

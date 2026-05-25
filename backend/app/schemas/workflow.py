@@ -17,6 +17,10 @@ class ProductCategory(str, Enum):
     HARDWARE = "硬件产品"
 
 
+class WorkflowCreate(BaseModel):
+    title: str = Field(..., min_length=1, max_length=255, description="工作流标题")
+
+
 class WorkflowConfig(BaseModel):
     target_product: str = Field(..., description="目标分析产品名称")
     product_category: ProductCategory = Field(..., description="产品品类")

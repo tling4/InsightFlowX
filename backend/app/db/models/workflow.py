@@ -9,6 +9,8 @@ from app.db.base import Base
 
 
 class Workflow(Base):
+    """竞品分析工作流聚合根。持有状态、配置、执行进度和修订控制信息。"""
+
     __tablename__ = "workflow"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)

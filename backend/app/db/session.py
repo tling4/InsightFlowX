@@ -9,6 +9,7 @@ async_session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_o
 
 
 async def get_async_session():
+    """FastAPI 依赖注入：为每个请求提供独立的数据库 session。"""
     async with async_session_factory() as session:
         try:
             yield session

@@ -10,7 +10,7 @@ class CollectionAgent(BaseAgent):
     node_name = "information_collection"
 
     async def run(self, state: dict, event_logger: EventLogger, workflow_id: uuid.UUID) -> dict:
-        """Stub：记录事件，返回空采集结果。"""
+        """Stub：竞品信息采集节点。当前返回空结构和事件记录，等待 LLM 集成。"""
         config = state.get("config", {})
         competitor_names = config.get("competitors", []) if isinstance(config, dict) else []
 

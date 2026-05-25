@@ -7,10 +7,11 @@ BACKEND_ROOT = Path(__file__).parent.parent
 
 
 class Settings(BaseSettings):
+    """应用配置，优先从 .env 文件加载。"""
     DATABASE_URL: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/dagents"
     DATABASE_URL_SYNC: str = "postgresql://postgres:postgres@localhost:5432/dagents"
 
-    JWT_SECRET_KEY: str = "change-me-in-production"
+    JWT_SECRET_KEY: str
     JWT_ALGORITHM: str = "HS256"
     JWT_EXPIRE_MINUTES: int = 1440
 

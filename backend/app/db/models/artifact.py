@@ -9,6 +9,8 @@ from app.db.base import Base
 
 
 class Artifact(Base):
+    """工作流产物：包含采集数据、分析矩阵、报告等各类输出。既存 JSON content 也存 content_text 以支持全文检索。"""
+
     __tablename__ = "artifact"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)

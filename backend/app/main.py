@@ -33,6 +33,7 @@ app.add_middleware(
 
 @app.exception_handler(AppException)
 async def app_exception_handler(request: Request, exc: AppException):
+    """全局业务异常处理器：将 AppException 及其子类自动转为统一 JSON 响应。"""
     return JSONResponse(
         status_code=exc.status_code,
         content={
@@ -45,6 +46,7 @@ async def app_exception_handler(request: Request, exc: AppException):
 
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception):
+    """全局兜底异常处理器：未被 AppException 捕获的异常返回 500 + INTERNAL_ERROR。"""
     logger.exception(f"Unhandled exception on {request.method} {request.url.path}: {exc}")
     return JSONResponse(
         status_code=500,

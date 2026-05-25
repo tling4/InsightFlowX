@@ -7,7 +7,7 @@ async def test_register_user(client: AsyncClient):
     resp = await client.post("/api/v1/auth/register", json={
         "username": "testuser",
         "email": "test@example.com",
-        "password": "123456"
+        "password": "12345678"
     })
     assert resp.status_code == 201
     data = resp.json()
@@ -20,11 +20,11 @@ async def test_login_user(client: AsyncClient):
     await client.post("/api/v1/auth/register", json={
         "username": "testuser2",
         "email": "test2@example.com",
-        "password": "123456"
+        "password": "12345678"
     })
     resp = await client.post("/api/v1/auth/login", json={
         "email": "test2@example.com",
-        "password": "123456"
+        "password": "12345678"
     })
     assert resp.status_code == 200
     assert "access_token" in resp.json()

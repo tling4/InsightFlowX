@@ -1,6 +1,10 @@
+import os
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
+
+# JWT_SECRET_KEY is required (no default). Set before any config import.
+os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key")
 
 import asyncio
 import pytest
@@ -10,6 +14,11 @@ from sqlalchemy.orm import sessionmaker
 from app.main import app
 from app.db.base import Base
 from app.db.session import get_async_session
+from app.services.rate_limiter import login_rate_limit, register_rate_limit
+
+
+async def _noop_rate_limit():
+    pass
 
 
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
@@ -35,6 +44,8 @@ async def client():
             yield session
 
     app.dependency_overrides[get_async_session] = override_get_async_session
+    app.dependency_overrides[login_rate_limit] = _noop_rate_limit
+    app.dependency_overrides[register_rate_limit] = _noop_rate_limit
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
         yield ac

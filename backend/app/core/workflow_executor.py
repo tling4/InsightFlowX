@@ -14,7 +14,11 @@ logger = logging.getLogger(__name__)
 
 
 def _extract_error_info(e: Exception) -> tuple[str, str, dict | None]:
-    """从异常中提取 error_code、message、details。"""
+    """从异常中提取结构化错误信息。
+
+    优先解包 NodeFatalError → AppException 以获取业务 error_code；
+    兜底返回通用 EXECUTION_ERROR 和异常消息截断。
+    """
     if isinstance(e, NodeFatalError) and isinstance(e.last_error, AppException):
         app_err = e.last_error
         return app_err.error_code, app_err.message, app_err.details
@@ -24,7 +28,14 @@ def _extract_error_info(e: Exception) -> tuple[str, str, dict | None]:
 
 
 async def run_workflow(workflow_id: uuid.UUID) -> None:
-    """BackgroundTasks 入口，运行完整 DAG。使用独立 DB session。"""
+    """BackgroundTasks 入口，运行完整 DAG。使用独立 DB session。
+
+    生命周期：
+      1. 校验工作流状态为 running
+      2. 编译 LangGraph，注入 initial state
+      3. ainvoke 执行，成功后标记 completed
+      4. 失败时 rollback → status = failed → 记录结构化事件
+    """
     async with async_session_factory() as db:
         workflow = await get_workflow_by_uuid(db, workflow_id)
         if not workflow:

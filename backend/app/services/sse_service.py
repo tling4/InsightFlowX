@@ -5,7 +5,14 @@ from typing import AsyncGenerator
 
 
 class SSEManager:
-    """内存 SSE 广播管理器，单进程单例。"""
+    """内存 SSE 广播管理器，单进程单例。
+
+    模式：发布-订阅
+      - subscribe：客户端连接时创建 asyncio.Queue 并注册
+      - broadcast：向指定 workflow 的所有订阅者推消息
+      - stream：异步生成器，消费 Queue 输出 SSE 格式文本
+      - close_workflow：发送 None 哨兵通知所有订阅者断开，清理订阅列表
+    """
 
     def __init__(self):
         self._subscribers: dict[uuid.UUID, list[asyncio.Queue]] = {}

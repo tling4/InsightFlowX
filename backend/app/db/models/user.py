@@ -8,6 +8,8 @@ from app.db.base import Base
 
 
 class User(Base):
+    """用户账户模型。存储认证凭据和基本信息。"""
+
     __tablename__ = "user"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)

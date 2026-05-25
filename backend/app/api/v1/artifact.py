@@ -66,7 +66,7 @@ async def download_artifact(
     current_user=Depends(get_current_user),
     db: AsyncSession = Depends(get_async_session),
 ):
-    """下载产物 Markdown 文件。"""
+    """下载产物 Markdown 文件。优先使用独立的 content_text 字段，report 类型回退到 content.full_markdown。"""
     artifact = await get_artifact_by_id(db, artifact_id)
     if not artifact:
         raise ArtifactNotFoundError(str(artifact_id))

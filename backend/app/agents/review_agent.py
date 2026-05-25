@@ -10,7 +10,7 @@ class ReviewAgent(BaseAgent):
     node_name = "review"
 
     async def run(self, state: dict, event_logger: EventLogger, workflow_id: uuid.UUID) -> dict:
-        """Stub：记录事件，默认通过审查。"""
+        """Stub：质量审查节点。默认全部通过，等待 LLM 驱动的审查逻辑集成。"""
         await self.log_and_broadcast(event_logger, EventType.NODE_START, {
             "input_summary": {"phase": "reviewing"},
         }, workflow_id)

@@ -9,6 +9,8 @@ from app.db.base import Base
 
 
 class WorkflowEvent(Base):
+    """工作流执行事件日志。每个事件有自增 seq，按节点和类型可筛选。"""
+
     __tablename__ = "workflow_event"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)

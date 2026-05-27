@@ -38,6 +38,7 @@ eggs/
 .eggs/
 lib/
 lib64/
+!frontend/lib/
 parts/
 sdist/
 var/
@@ -243,3 +244,5 @@ __marimo__/
 Technical Design Document.md
 Git 协作约定.md
 Official Documentation.md
+report/
+!frontend/components/report/

@@ -26,6 +26,7 @@ from app.agents.review_agent import ReviewAgent
 from app.schemas.review import ReviewOutput, ReviewCheck
 from app.db.models.workflow import Workflow
 from langgraph.errors import GraphInterrupt
+from langgraph.types import Command
 
 
 # ---------------------------------------------------------------------------
@@ -61,29 +62,29 @@ def _make_review_dict(passed: bool, score: float = 75.0, target_node: str = "ana
 # ---------------------------------------------------------------------------
 
 class TestPauseRouter:
-    """Tests for make_pause_router("done")(state) → node_name | 'done'."""
+    """Tests for make_pause_router(current_node, default_next)(state)."""
 
     def test_passed_review_routes_to_done(self):
         state = {"review_result": _make_review_dict(passed=True)}
-        assert make_pause_router("done")(state) == "done"
+        assert make_pause_router("review", "done")(state) == "done"
 
     def test_none_review_routes_to_done(self):
-        assert make_pause_router("done")({}) == "done"
-        assert make_pause_router("done")({"review_result": None}) == "done"
+        assert make_pause_router("review", "done")({}) == "done"
+        assert make_pause_router("review", "done")({"review_result": None}) == "done"
 
     def test_passed_review_has_no_target_node_routes_to_done(self):
         """Passed review sets target_node=None, router sees no valid target → done."""
         state = {"review_result": _make_review_dict(passed=True, target_node=None)}
-        assert make_pause_router("done")(state) == "done"
+        assert make_pause_router("review", "done")(state) == "done"
 
-    def test_max_revisions_review_may_routes_to_done(self):
-        """When max_revisions reached, agent sets no target_node → router goes done."""
+    def test_max_revisions_review_routes_to_done(self):
+        """When max_revisions is reached, stale target_node no longer reroutes."""
         state = {
-            "review_result": _make_review_dict(passed=False, target_node=None),
+            "review_result": _make_review_dict(passed=False, target_node="analysis"),
             "revision_count": 3,
             "max_revisions": 3,
         }
-        assert make_pause_router("done")(state) == "done"
+        assert make_pause_router("review", "done")(state) == "done"
 
     def test_human_jump_has_priority_over_agent_target(self):
         """Human jump target takes priority over agent's suggested target_node."""
@@ -91,60 +92,85 @@ class TestPauseRouter:
             "review_result": _make_review_dict(passed=False, target_node="analysis"),
             "human_decision": {"action": "jump", "target_node": "information_collection"},
         }
-        assert make_pause_router("done")(state) == "information_collection"
+        route = make_pause_router("review", "done")(state)
+        assert isinstance(route, Command)
+        assert route.goto == "information_collection"
+        assert route.update == {
+            "human_decision": None,
+            "review_result": None,
+            "cached_review_result": None,
+        }
 
     def test_human_jump_routes_to_target_node(self):
         state = {
             "review_result": _make_review_dict(passed=False, target_node="analysis"),
             "human_decision": {"action": "jump", "target_node": "report_writing"},
         }
-        assert make_pause_router("done")(state) == "report_writing"
+        route = make_pause_router("review", "done")(state)
+        assert isinstance(route, Command)
+        assert route.goto == "report_writing"
 
-    def test_human_jump_invalid_target_falls_back_to_agent(self):
+    def test_human_jump_invalid_target_falls_back_to_review_agent_target_on_review_node(self):
         state = {
             "review_result": _make_review_dict(passed=False, target_node="analysis"),
             "human_decision": {"action": "jump", "target_node": "bogus_node"},
         }
-        assert make_pause_router("done")(state) == "analysis"
+        route = make_pause_router("review", "done")(state)
+        assert isinstance(route, Command)
+        assert route.goto == "analysis"
+        assert route.update == {"review_result": None}
 
-    def test_approve_action_falls_back_to_agent_target(self):
-        """approve is not 'jump', so router ignores human_decision and uses agent target."""
+    def test_non_jump_action_does_not_reroute_outside_review_node(self):
+        """Non-review nodes must ignore stale review_result.target_node."""
         state = {
             "review_result": _make_review_dict(passed=False, target_node="information_collection"),
             "human_decision": {"action": "approve"},
         }
-        assert make_pause_router("done")(state) == "information_collection"
+        assert make_pause_router("information_collection", "analysis")(state) == "analysis"
 
-    def test_no_human_decision_uses_agent_target_node(self):
+    def test_review_node_uses_agent_target_node_once(self):
         state = {
             "review_result": _make_review_dict(passed=False, target_node="report_writing"),
+            "revision_count": 0,
+            "max_revisions": 3,
         }
-        assert make_pause_router("done")(state) == "report_writing"
+        route = make_pause_router("review", "done")(state)
+        assert isinstance(route, Command)
+        assert route.goto == "report_writing"
+        assert route.update == {"review_result": None}
+
+    def test_non_review_node_ignores_agent_target_node(self):
+        state = {
+            "review_result": _make_review_dict(passed=False, target_node="information_collection"),
+        }
+        assert make_pause_router("information_collection", "analysis")(state) == "analysis"
 
     def test_agent_target_node_invalid_falls_to_done(self):
         """Invalid agent target_node → done (no reroute)."""
         state = {
             "review_result": _make_review_dict(passed=False, target_node="bogus"),
         }
-        assert make_pause_router("done")(state) == "done"
+        assert make_pause_router("review", "done")(state) == "done"
 
     def test_missing_target_node_falls_to_done(self):
         """No target_node anywhere → done (no reroute)."""
         review = _make_review_dict(passed=False)
         del review["target_node"]
         state = {"review_result": review}
-        assert make_pause_router("done")(state) == "done"
+        assert make_pause_router("review", "done")(state) == "done"
 
-    def test_human_decision_empty_dict_falls_back_to_agent(self):
+    def test_human_decision_empty_dict_falls_back_to_review_agent_target_on_review_node(self):
         state = {
             "review_result": _make_review_dict(passed=False, target_node="information_collection"),
             "human_decision": {},
         }
-        assert make_pause_router("done")(state) == "information_collection"
+        route = make_pause_router("review", "done")(state)
+        assert isinstance(route, Command)
+        assert route.goto == "information_collection"
 
     def test_no_review_no_human_falls_to_done(self):
         """Neither review_result nor human_decision → done."""
-        assert make_pause_router("done")({}) == "done"
+        assert make_pause_router("review", "done")({}) == "done"
 
 
 # ---------------------------------------------------------------------------

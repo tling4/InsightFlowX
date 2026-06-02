@@ -217,9 +217,17 @@ def make_review_node(db: AsyncSession, workflow_id: uuid.UUID, event_logger: Eve
         # 跳过 ReviewAgent 重跑，直接使用缓存结果（避免浪费 LLM 调用）
         if state.get("human_decision") and state.get("cached_review_result"):
             revision_count = state.get("revision_count", 0)
+            human_decision = state.get("human_decision") or {}
+            cached_review_result = state.get("cached_review_result") or {}
+            reroute_target = None
+            if human_decision.get("action") == "jump":
+                reroute_target = human_decision.get("target_node") or cached_review_result.get("target_node")
             result = {
                 **state["cached_review_result"],
-                "human_decision": state["human_decision"],
+                "human_decision": None,
+                "cached_review_result": None,
+                "review_reroute_target": reroute_target,
+                "review_result_consumed": True,
                 "revision_count": revision_count + 1,
                 "current_phase": "reviewing",
             }

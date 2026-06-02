@@ -40,6 +40,7 @@ export interface WorkflowDetail {
   current_phase: string;
   config: Partial<WorkflowConfig>;
   revision_count: number;
+  execution_attempt: number;
   max_revisions?: number;
   total_tokens?: number;
   error_message?: string | null;

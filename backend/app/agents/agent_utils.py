@@ -73,6 +73,46 @@ def extract_json_object(text: str) -> dict[str, Any]:
     raise ValueError("LLM response did not contain a valid JSON object")
 
 
+def _schema_repair_prompt(
+    *,
+    system_prompt: str,
+    user_payload: dict[str, Any],
+    schema: type[T],
+    raw_content: str,
+    error_message: str,
+) -> list[tuple[str, str]]:
+    """Build a compact repair prompt for malformed structured outputs."""
+    return [
+        (
+            "system",
+            "\n".join([
+                system_prompt.strip(),
+                "",
+                "你刚才输出的内容没有通过结构化校验。请只返回一个合法 JSON 对象，不要解释，不要 Markdown。",
+            ]),
+        ),
+        (
+            "human",
+            json.dumps(
+                {
+                    "original_input": user_payload,
+                    "expected_schema": schema.model_json_schema(),
+                    "invalid_output": raw_content,
+                    "validation_error": error_message,
+                    "repair_rules": [
+                        "只返回 JSON 对象本体",
+                        "不要添加多余字段",
+                        "缺失字段请使用 schema 默认值或空值",
+                        "确保字段类型严格匹配 schema",
+                    ],
+                },
+                ensure_ascii=False,
+                default=str,
+            ),
+        ),
+    ]
+
+
 async def invoke_json_model(
     system_prompt: str,
     user_payload: dict[str, Any],
@@ -94,24 +134,48 @@ async def invoke_json_model(
         ("human", json.dumps(user_payload, ensure_ascii=False, default=str)),
     ]
 
-    if stream_callback is None:
-        response = await llm.ainvoke(messages)
-        content = response.content
-        if isinstance(content, list):
-            content = "".join(part.get("text", "") for part in content if isinstance(part, dict))
-    else:
+    async def _invoke(raw_messages: list[tuple[str, str]], allow_stream: bool) -> str:
+        if not allow_stream:
+            response = await llm.ainvoke(raw_messages)
+            content = response.content
+            if isinstance(content, list):
+                content = "".join(part.get("text", "") for part in content if isinstance(part, dict))
+            return str(content)
+
         parts: list[str] = []
-        async for chunk in llm.astream(messages):
+        async for chunk in llm.astream(raw_messages):
             text = chunk.content
             if isinstance(text, list):
                 text = "".join(part.get("text", "") for part in text if isinstance(part, dict))
             if text:
-                parts.append(str(text))
-                await stream_callback(str(text))
-        content = "".join(parts)
+                piece = str(text)
+                parts.append(piece)
+                await stream_callback(piece)  # type: ignore[misc]
+        return "".join(parts)
 
-    data = extract_json_object(str(content))
-    return schema.model_validate(data)
+    content = await _invoke(messages, stream_callback is not None)
+    try:
+        data = extract_json_object(content)
+        return schema.model_validate(data)
+    except Exception as first_error:
+        repair_messages = _schema_repair_prompt(
+            system_prompt=system_prompt,
+            user_payload=user_payload,
+            schema=schema,
+            raw_content=content,
+            error_message=str(first_error),
+        )
+        repair_response = await llm.ainvoke(repair_messages)
+        repair_content = repair_response.content
+        if isinstance(repair_content, list):
+            repair_content = "".join(part.get("text", "") for part in repair_content if isinstance(part, dict))
+        try:
+            repaired = extract_json_object(str(repair_content))
+            return schema.model_validate(repaired)
+        except Exception as second_error:
+            raise ValueError(
+                f"Structured output validation failed after repair attempt: {first_error}; repair_error: {second_error}"
+            ) from second_error
 
 
 def truncate_text(text: str, limit: int = 1200) -> str:

@@ -26,7 +26,6 @@ from app.agents.review_agent import ReviewAgent
 from app.schemas.review import ReviewOutput, ReviewCheck
 from app.db.models.workflow import Workflow
 from langgraph.errors import GraphInterrupt
-from langgraph.types import Command
 
 
 # ---------------------------------------------------------------------------
@@ -93,13 +92,7 @@ class TestPauseRouter:
             "human_decision": {"action": "jump", "target_node": "information_collection"},
         }
         route = make_pause_router("review", "done")(state)
-        assert isinstance(route, Command)
-        assert route.goto == "information_collection"
-        assert route.update == {
-            "human_decision": None,
-            "review_result": None,
-            "cached_review_result": None,
-        }
+        assert route == "information_collection"
 
     def test_human_jump_routes_to_target_node(self):
         state = {
@@ -107,8 +100,7 @@ class TestPauseRouter:
             "human_decision": {"action": "jump", "target_node": "report_writing"},
         }
         route = make_pause_router("review", "done")(state)
-        assert isinstance(route, Command)
-        assert route.goto == "report_writing"
+        assert route == "report_writing"
 
     def test_human_jump_invalid_target_falls_back_to_review_agent_target_on_review_node(self):
         state = {
@@ -116,9 +108,7 @@ class TestPauseRouter:
             "human_decision": {"action": "jump", "target_node": "bogus_node"},
         }
         route = make_pause_router("review", "done")(state)
-        assert isinstance(route, Command)
-        assert route.goto == "analysis"
-        assert route.update == {"review_result": None}
+        assert route == "analysis"
 
     def test_non_jump_action_does_not_reroute_outside_review_node(self):
         """Non-review nodes must ignore stale review_result.target_node."""
@@ -135,9 +125,7 @@ class TestPauseRouter:
             "max_revisions": 3,
         }
         route = make_pause_router("review", "done")(state)
-        assert isinstance(route, Command)
-        assert route.goto == "report_writing"
-        assert route.update == {"review_result": None}
+        assert route == "report_writing"
 
     def test_non_review_node_ignores_agent_target_node(self):
         state = {
@@ -165,8 +153,7 @@ class TestPauseRouter:
             "human_decision": {},
         }
         route = make_pause_router("review", "done")(state)
-        assert isinstance(route, Command)
-        assert route.goto == "information_collection"
+        assert route == "information_collection"
 
     def test_no_review_no_human_falls_to_done(self):
         """Neither review_result nor human_decision → done."""
@@ -603,7 +590,10 @@ class TestCachedReviewResultSkip:
         mock_run.assert_not_called()
         assert result["revision_count"] == 1
         assert result["score"] == 45
-        assert result["human_decision"] == {"action": "jump", "target_node": "analysis"}
+        assert result["human_decision"] is None
+        assert result["cached_review_result"] is None
+        assert result["review_reroute_target"] == "analysis"
+        assert result["review_result_consumed"] is True
 
     @pytest.mark.asyncio
     async def test_no_cached_result_calls_agent_normally(self):

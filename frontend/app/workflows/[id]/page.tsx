@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useParams } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@/lib/auth-context";
@@ -81,7 +81,7 @@ export default function WorkflowStudioPage() {
         <Header workflow={workflow} />
         {isInterviewStage && <InterviewView workflowId={id} token={token!} workflow={workflow} />}
         {isRuntimeStage && <DagRuntimeView workflowId={id} token={token!} workflow={workflow} />}
-        {isTerminalStage && <ReportView workflowId={id} workflowStatus={status!} />}
+        {isTerminalStage && <ReportView workflowId={id} workflowStatus={status!} executionAttempt={workflow.execution_attempt} />}
         {!isInterviewStage && !isRuntimeStage && !isTerminalStage && (
           <div className="flex h-[calc(100vh-57px)] items-center justify-center">
             <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-6 py-4 text-center max-w-md space-y-3">
@@ -315,6 +315,7 @@ function InterviewView({ workflowId, token, workflow }: { workflowId: string; to
 function DagRuntimeView({ workflowId, token, workflow }: { workflowId: string; token: string; workflow: WorkflowDetail }) {
   const qc = useQueryClient();
   const isPaused = workflow.status === "paused";
+  const executionAttempt = workflow.execution_attempt;
   const [nodeStates, setNodeStates] = useState<
     Record<AgentNodeName, { status: NodeStatus; message?: string; duration_ms?: number }>
   >({
@@ -329,7 +330,8 @@ function DagRuntimeView({ workflowId, token, workflow }: { workflowId: string; t
   const [dialogMessages, setDialogMessages] = useState<Array<{ role: "user" | "system"; content: string; time: string }>>([]);
   const [deciding, setDeciding] = useState(false);
   const [decideError, setDecideError] = useState<string | null>(null);
-  const [showStaleWarning, setShowStaleWarning] = useState(false);
+  const [recoveryState, setRecoveryState] = useState<"idle" | "recovering" | "failed">("idle");
+  const recoveryTriggeredRef = useRef(false);
 
   const handleEvent = useCallback((e: WorkflowEvent) => {
     // llm_stream events carry per-token content at top level (not in payload)
@@ -344,6 +346,7 @@ function DagRuntimeView({ workflowId, token, workflow }: { workflowId: string; t
     // Track active node to reset stream panel when a new node starts
     if (e.event_type === "node_start" && e.node_name) {
       setActiveNode(e.node_name as AgentNodeName);
+      setRecoveryState("idle");
     }
 
     // Only node lifecycle events affect nodeStates; skip irrelevant ones
@@ -437,67 +440,116 @@ function DagRuntimeView({ workflowId, token, workflow }: { workflowId: string; t
     }
   };
 
-  // Replay historical events on mount to rebuild nodeStates (for page revisit)
+  // Replay current-attempt history on mount, then recover if the workflow is stale.
   useEffect(() => {
-    const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000/api/v1";
-    fetch(`${baseUrl}/workflows/${workflowId}/events?limit=200`, {
-      headers: { Authorization: `Bearer ${token}` },
-    })
-      .then((r) => r.json())
-      .then((body: { items?: WorkflowEvent[] } | WorkflowEvent[]) => {
-        // 后端返回 {items, total, limit, offset} 分页信封；兼容裸数组以防契约变动
-        const list: WorkflowEvent[] = Array.isArray(body) ? body : (body?.items ?? []);
-        if (list.length === 0) return;
-        const sorted = [...list].sort((a, b) => a.seq - b.seq);
-        const rebuilt: Record<AgentNodeName, { status: NodeStatus; message?: string; duration_ms?: number }> = {
-          information_collection: { status: "idle" },
-          analysis: { status: "idle" },
-          report_writing: { status: "idle" },
-          review: { status: "idle" },
-        };
-        let reroute = false;
-        let lastEventTime = 0;
-        for (const e of sorted) {
-          const node = e.node_name as AgentNodeName;
-          if (!node) continue;
-          const payload = e.payload as Record<string, unknown> | undefined;
-          switch (e.event_type) {
-            case "node_start":
-              rebuilt[node] = { ...rebuilt[node], status: "active", message: "Running..." };
-              break;
-            case "node_complete":
-              rebuilt[node] = { ...rebuilt[node], status: "completed", message: "Completed", duration_ms: payload?.duration_ms as number };
-              break;
-            case "node_error":
-              rebuilt[node] = { ...rebuilt[node], status: "failed", message: (payload?.error_message as string) || "Error" };
-              break;
-            case "review_reroute":
-            case "reroute":
-              rebuilt.review = { ...rebuilt.review, status: "rerouted", message: "Rerouting..." };
-              if (payload?.target_node) {
-                rebuilt[payload.target_node as AgentNodeName] = { ...rebuilt[payload.target_node as AgentNodeName], status: "idle" };
-              }
-              reroute = true;
-              break;
-          }
-          if (e.created_at) {
-            lastEventTime = Math.max(lastEventTime, new Date(e.created_at).getTime());
-          }
-        }
-        setNodeStates(rebuilt);
-        setHasReroute(reroute);
+    recoveryTriggeredRef.current = false;
+    queueMicrotask(() => setRecoveryState("idle"));
 
-        // Stale detection: running workflow with no recent events and all nodes idle
-        const allIdle = Object.values(rebuilt).every((s) => s.status === "idle");
-        if (!isPaused && allIdle && sorted.length > 0) {
-          const age = Date.now() - lastEventTime;
-          if (age > 60_000) {
-            setShowStaleWarning(true);
-          }
+    const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000/api/v1";
+
+    const rebuildFromEvents = (list: WorkflowEvent[]) => {
+      const rebuilt: Record<AgentNodeName, { status: NodeStatus; message?: string; duration_ms?: number }> = {
+        information_collection: { status: "idle" },
+        analysis: { status: "idle" },
+        report_writing: { status: "idle" },
+        review: { status: "idle" },
+      };
+      let reroute = false;
+      let lastEventTime = 0;
+      let hasLifecycleEvents = false;
+
+      for (const e of [...list].sort((a, b) => a.seq - b.seq)) {
+        const node = e.node_name as AgentNodeName;
+        if (!node) continue;
+        const payload = e.payload as Record<string, unknown> | undefined;
+        switch (e.event_type) {
+          case "node_start":
+            rebuilt[node] = { ...rebuilt[node], status: "active", message: "Running..." };
+            hasLifecycleEvents = true;
+            break;
+          case "node_complete":
+            rebuilt[node] = {
+              ...rebuilt[node],
+              status: "completed",
+              message: "Completed",
+              duration_ms: (payload?.duration_ms as number) ?? undefined,
+            };
+            hasLifecycleEvents = true;
+            break;
+          case "node_error":
+            rebuilt[node] = { ...rebuilt[node], status: "failed", message: (payload?.error_message as string) || "Error" };
+            hasLifecycleEvents = true;
+            break;
+          case "review_reroute":
+          case "reroute":
+            rebuilt.review = { ...rebuilt.review, status: "rerouted", message: "Rerouting..." };
+            if (payload?.target_node) {
+              rebuilt[payload.target_node as AgentNodeName] = { ...rebuilt[payload.target_node as AgentNodeName], status: "idle" };
+            }
+            reroute = true;
+            break;
         }
-      })
-      .catch(() => {});
-  }, [workflowId, token, isPaused]);
+        if (e.created_at) {
+          lastEventTime = Math.max(lastEventTime, new Date(e.created_at).getTime());
+        }
+      }
+
+      return { rebuilt, reroute, lastEventTime, hasLifecycleEvents };
+    };
+
+    const maybeRecover = async () => {
+      try {
+        const [eventsRes, statesRes] = await Promise.all([
+          fetch(`${baseUrl}/workflows/${workflowId}/events?limit=200&execution_attempt=${executionAttempt}`, {
+            headers: { Authorization: `Bearer ${token}` },
+          }),
+          fetch(`${baseUrl}/workflows/${workflowId}/states?execution_attempt=${executionAttempt}`, {
+            headers: { Authorization: `Bearer ${token}` },
+          }),
+        ]);
+
+        const eventsBody = await eventsRes.json().catch(() => ({}));
+        const statesBody = await statesRes.json().catch(() => []);
+        const eventList: WorkflowEvent[] = Array.isArray(eventsBody) ? eventsBody : (eventsBody?.items ?? []);
+        const eventState = rebuildFromEvents(eventList);
+
+        setNodeStates(eventState.rebuilt);
+        setHasReroute(eventState.reroute);
+
+        const latestNodeStateTime = (Array.isArray(statesBody) ? statesBody : []).reduce((max, item) => {
+          if (!item?.created_at) return max;
+          return Math.max(max, new Date(item.created_at).getTime());
+        }, 0);
+        const latestActivity = Math.max(eventState.lastEventTime, latestNodeStateTime, new Date(workflow.updated_at).getTime());
+        const ageMs = Date.now() - latestActivity;
+        const allIdle = Object.values(eventState.rebuilt).every((s) => s.status === "idle");
+        const shouldRecover =
+          workflow.status === "running" &&
+          !isPaused &&
+          allIdle &&
+          !recoveryTriggeredRef.current &&
+          (
+            (eventState.hasLifecycleEvents && ageMs > 60_000) ||
+            (!eventState.hasLifecycleEvents && ageMs > 15_000)
+          );
+
+        if (!shouldRecover) return;
+
+        recoveryTriggeredRef.current = true;
+        setRecoveryState("recovering");
+        const res = await fetch(`${baseUrl}/workflows/${workflowId}/recover`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        qc.invalidateQueries({ queryKey: ["workflow", workflowId] });
+      } catch {
+        setRecoveryState("failed");
+      }
+    };
+
+    void maybeRecover();
+  }, [workflowId, token, isPaused, workflow.status, workflow.updated_at, executionAttempt, qc]);
 
   useWorkflowStream({
     workflowId,
@@ -521,12 +573,20 @@ function DagRuntimeView({ workflowId, token, workflow }: { workflowId: string; t
           <DagCanvas nodeStates={nodeStates} hasReroute={hasReroute} />
         </div>
         {/* Stale workflow warning */}
-        {showStaleWarning && (
+        {recoveryState === "recovering" && (
           <div className="shrink-0 rounded-xl border border-amber-500/20 bg-amber-500/10 p-3 flex items-center gap-3">
+            <Spinner size={14} />
             <span className="text-xs text-amber-300 flex-1">
-              此工作流执行可能已中断（服务重启或进程异常）。建议返回仪表板重新启动。
+              检测到工作流中断，正在从断点自动恢复...
             </span>
-            <Button variant="ghost" size="sm" onClick={() => setShowStaleWarning(false)} className="text-xs">
+          </div>
+        )}
+        {recoveryState === "failed" && (
+          <div className="shrink-0 rounded-xl border border-rose-500/20 bg-rose-500/10 p-3 flex items-center gap-3">
+            <span className="text-xs text-rose-300 flex-1">
+              自动恢复失败，请返回仪表板重新启动或手动重试。
+            </span>
+            <Button variant="ghost" size="sm" onClick={() => setRecoveryState("idle")} className="text-xs">
               忽略
             </Button>
           </div>
@@ -611,9 +671,9 @@ function DagRuntimeView({ workflowId, token, workflow }: { workflowId: string; t
 }
 
 /* ─── Report View ─── */
-function ReportView({ workflowId, workflowStatus }: { workflowId: string; workflowStatus: string }) {
+function ReportView({ workflowId, workflowStatus, executionAttempt }: { workflowId: string; workflowStatus: string; executionAttempt: number }) {
   const { token } = useAuth();
-  const { data: artifactList } = useArtifacts(workflowId);
+  const { data: artifactList } = useArtifacts(workflowId, true, executionAttempt);
   const [fullArtifacts, setFullArtifacts] = useState<Record<string, unknown>>({});
   const [activeCitation, setActiveCitation] = useState<number | null>(null);
   const [activeSection, setActiveSection] = useState<string | null>(null);
@@ -654,7 +714,7 @@ function ReportView({ workflowId, workflowStatus }: { workflowId: string; workfl
     });
   }, [artifactList, token]);
 
-  const { data: traceLinks } = useTraceLinks(workflowId, workflowStatus === "completed");
+  const { data: traceLinks } = useTraceLinks(workflowId, workflowStatus === "completed", executionAttempt);
 
   const report = fullArtifacts.report as ReportOutput | undefined;
   const swot = fullArtifacts.swot_analysis as SWOTAnalysis | undefined;
@@ -666,7 +726,7 @@ function ReportView({ workflowId, workflowStatus }: { workflowId: string; workfl
     if (workflowStatus !== "completed" && workflowStatus !== "failed") return;
     if (!token) return;
     const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000/api/v1";
-    fetch(`${baseUrl}/workflows/${workflowId}/events?event_type=review_pass&event_type=review_fail&event_type=review_reroute`, {
+    fetch(`${baseUrl}/workflows/${workflowId}/events?event_type=review_pass&event_type=review_fail&event_type=review_reroute&execution_attempt=${executionAttempt}`, {
       headers: { Authorization: `Bearer ${token}` },
     })
       .then((r) => r.json())
@@ -688,7 +748,7 @@ function ReportView({ workflowId, workflowStatus }: { workflowId: string; workfl
       .catch(() => {
         if (workflowStatus === "completed") setRevisions([{ number: 1, passed: true }]);
       });
-  }, [workflowId, workflowStatus, token]);
+  }, [workflowId, workflowStatus, token, executionAttempt]);
 
   return (
     <div className="h-[calc(100vh-57px)] flex flex-col">

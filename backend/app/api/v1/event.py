@@ -16,6 +16,7 @@ async def list_events(
     workflow_id: str,
     node_name: str | None = Query(None),
     event_type: str | None = Query(None),
+    execution_attempt: int | None = Query(None, ge=1),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     current_user=Depends(get_current_user),
@@ -25,8 +26,8 @@ async def list_events(
     workflow = await get_workflow_by_id(db, workflow_id, current_user.id)
     if not workflow:
         raise WorkflowNotFoundError(workflow_id)
-    events = await get_events(db, workflow.id, node_name, event_type, limit, offset)
-    total = await count_events(db, workflow.id, node_name, event_type)
+    events = await get_events(db, workflow.id, node_name, event_type, execution_attempt, limit, offset)
+    total = await count_events(db, workflow.id, node_name, event_type, execution_attempt)
     return {
         "items": [
             {
@@ -66,6 +67,7 @@ async def sse_stream(
 @router.get("/states")
 async def list_node_states(
     workflow_id: str,
+    execution_attempt: int | None = Query(None, ge=1),
     current_user=Depends(get_current_user),
     db: AsyncSession = Depends(get_async_session),
 ):
@@ -73,7 +75,7 @@ async def list_node_states(
     workflow = await get_workflow_by_id(db, workflow_id, current_user.id)
     if not workflow:
         raise WorkflowNotFoundError(workflow_id)
-    states = await get_node_states(db, workflow.id)
+    states = await get_node_states(db, workflow.id, execution_attempt)
     return [
         {
             "id": str(s.id),

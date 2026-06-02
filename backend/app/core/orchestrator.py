@@ -3,62 +3,55 @@ langgraph stategraph building and dynamic DAG routing.
 """
 
 import uuid
-from sqlalchemy.ext.asyncio import AsyncSession
-from langgraph.graph import StateGraph, END
+
 from langgraph.checkpoint.postgres import PostgresSaver
-from langgraph.types import Command
-from app.schemas.workflow_state import WorkflowState
-from app.services.event_service import EventLogger
+from langgraph.graph import END, StateGraph
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.core.graph_nodes import (
-    make_collection_node,
     make_analysis_node,
+    make_collection_node,
     make_report_node,
     make_review_node,
 )
+from app.schemas.workflow_state import WorkflowState
+from app.services.event_service import EventLogger
 
 
 REROUTE_TARGETS = ("information_collection", "analysis", "report_writing")
 
 
 def make_pause_router(current_node: str, default_next: str):
-    """创建暂停恢复后的通用条件路由函数。
+    """Create the conditional router used after each node.
 
-    每个 DAG 节点都通过此路由决定下一步：正常完成时走 default_next。
-
-    优先级：
-      1. 人工 jump + 有效 target_node → 跳到该节点，并消费本次审查结果
-      2. 仅 review 节点可消费 review_result.target_node → 跳到建议节点
-      3. 其他节点始终走 default_next，避免旧 review_result 造成自循环
+    The router must only return hashable route labels. Returning a Command here
+    would make LangGraph hash the Command object inside the conditional branch
+    machinery, which fails because Command may contain dict payloads.
     """
-    def _router(state: dict) -> str | Command:
-        # 1. 人工决策优先。跳转意图只消费一次，避免目标节点执行后继续
-        # 被旧 review_result.target_node 拉回同一节点。
-        human_decision = state.get("human_decision") or {}
-        if human_decision.get("action") == "jump":
-            target = human_decision.get("target_node")
-            if target in REROUTE_TARGETS:
-                return Command(
-                    goto=target,
-                    update={
-                        "human_decision": None,
-                        "review_result": None,
-                        "cached_review_result": None,
-                    },
-                )
 
-        # 2. agent 建议只允许从 review 节点发起，并且只消费一次。
-        # collection/analysis/report 节点不能读取旧 review_result，否则会
-        # 在修订路径中反复跳回同一个 target_node。
+    def _router(state: dict) -> str:
+        # Review nodes can carry an explicit reroute target after resume.
         if current_node == "review":
-            review = state.get("review_result")
-            if isinstance(review, dict):
-                target = review.get("target_node")
-                revision_count = state.get("revision_count", 0)
-                max_revisions = state.get("max_revisions", 3)
-                if target in REROUTE_TARGETS and revision_count < max_revisions:
-                    return Command(goto=target, update={"review_result": None})
+            revision_count = state.get("revision_count", 0)
+            max_revisions = state.get("max_revisions", 3)
 
-        # 3. 正常流程
+            human_decision = state.get("human_decision") or {}
+            if human_decision.get("action") == "jump":
+                target = human_decision.get("target_node")
+                if target in REROUTE_TARGETS and revision_count < max_revisions:
+                    return target
+
+            reroute_target = state.get("review_reroute_target")
+            if reroute_target in REROUTE_TARGETS and revision_count < max_revisions:
+                return reroute_target
+
+            if not state.get("review_result_consumed"):
+                review = state.get("review_result")
+                if isinstance(review, dict):
+                    target = review.get("target_node")
+                    if target in REROUTE_TARGETS and revision_count < max_revisions:
+                        return target
+
         return default_next
 
     return _router
@@ -71,21 +64,8 @@ def compile_workflow_graph(
     execution_attempt: int,
     checkpointer: PostgresSaver | None = None,
 ):
-    """编译 LangGraph StateGraph。
+    """Compile the LangGraph StateGraph for the workflow."""
 
-    所有节点均通过条件边连接，支持任意节点暂停后跳转：
-
-      ┌────────────────── reroute ──────────────────┐
-      ↓                                             │
-      information_collection → analysis → report_writing → review
-                                  ↑          ↑              │
-                                  └──────────┴── reroute ───┘
-                                                          │
-                                                        done → END
-
-    正常执行时 make_pause_router 返回 default_next，行为等价于线性 add_edge。
-    有人工 jump 或 agent 建议的 target_node 时才走 reroute。
-    """
     graph = StateGraph(WorkflowState)
 
     graph.add_node("information_collection", make_collection_node(db, workflow_id, event_logger, execution_attempt))

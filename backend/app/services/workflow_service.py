@@ -62,6 +62,37 @@ async def start_workflow(
     return workflow
 
 
+async def restart_workflow(
+    db: AsyncSession,
+    workflow_id: str,
+    owner_id: uuid.UUID,
+) -> Workflow:
+    """Restart a workflow from a fresh execution attempt.
+
+    Keeps the saved config, but clears runtime fields that belong to the
+    previous attempt so the next run starts from a clean graph checkpoint
+    namespace.
+    """
+    workflow = await get_workflow_by_id(db, workflow_id, owner_id)
+    if not workflow:
+        raise WorkflowNotFoundError(workflow_id)
+    if workflow.status not in ("failed", "paused"):
+        raise InvalidStateTransitionError(workflow_id, workflow.status, "retry")
+
+    workflow.status = "running"
+    workflow.current_phase = "collecting"
+    workflow.error_message = None
+    workflow.pause_state = None
+    workflow.completed_at = None
+    workflow.revision_count = 0
+    workflow.total_tokens = 0
+    workflow.execution_attempt += 1
+    workflow.langgraph_checkpoint_id = None
+    await db.commit()
+    await db.refresh(workflow)
+    return workflow
+
+
 async def cancel_workflow(db: AsyncSession, workflow_id: str, owner_id: uuid.UUID) -> Workflow:
     """取消工作流。已 completed / cancelled 状态不允许重复取消。"""
     workflow = await get_workflow_by_id(db, workflow_id, owner_id)

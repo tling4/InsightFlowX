@@ -6,11 +6,11 @@ from app.schemas.auth import UserResponse
 from app.schemas.workflow import WorkflowConfig, WorkflowCreate
 from app.schemas.decision import DecisionRequest
 from app.db.queries.workflow_queries import get_workflow_by_id, get_user_workflows
-from app.services.workflow_service import create_workflow, start_workflow, cancel_workflow, delete_workflow
+from app.services.workflow_service import create_workflow, start_workflow, cancel_workflow, delete_workflow, restart_workflow
 from app.services.sse_service import sse_manager
 from app.services.event_service import EventLogger
 from app.schemas.event import EventType
-from app.core.workflow_executor import run_workflow, resume_workflow
+from app.core.workflow_executor import run_workflow, resume_workflow, recover_workflow
 from app.exceptions import WorkflowNotFoundError, InvalidStateTransitionError
 
 
@@ -52,6 +52,7 @@ async def get_workflow_detail(
         "current_phase": workflow.current_phase,
         "config": workflow.config,
         "revision_count": workflow.revision_count,
+        "execution_attempt": workflow.execution_attempt,
         "max_revisions": workflow.max_revisions,
         "total_tokens": workflow.total_tokens,
         "error_message": workflow.error_message,
@@ -76,7 +77,7 @@ async def start_workflow_endpoint(
     使右侧面板用户编辑成为权威配置（覆盖 LLM 未提取或提取错误的字段）。
     """
     workflow = await start_workflow(db, workflow_id, current_user.id, override_config)
-    background_tasks.add_task(run_workflow, workflow.id)
+    background_tasks.add_task(run_workflow, workflow.id, db.bind)
     return {"workflow_id": str(workflow.id), "status": workflow.status}
 
 
@@ -101,22 +102,31 @@ async def retry_node_endpoint(
     db: AsyncSession = Depends(get_async_session),
 ):
     """重试失败的工作流，从零开始重新执行。"""
-    workflow = await get_workflow_by_id(db, workflow_id, current_user.id)
-    if not workflow:
-        raise WorkflowNotFoundError(workflow_id)
-    if workflow.status not in ("failed", "paused"):
-        raise InvalidStateTransitionError(workflow_id, workflow.status, "retry")
-    workflow.status = "running"
-    workflow.error_message = None
-    workflow.execution_attempt += 1
-    await db.commit()
-    background_tasks.add_task(run_workflow, workflow.id)
+    workflow = await restart_workflow(db, workflow_id, current_user.id)
+    background_tasks.add_task(run_workflow, workflow.id, db.bind)
     return {
         "workflow_id": str(workflow.id),
         "status": "running",
         "execution_attempt": workflow.execution_attempt,
         "retry_node": node_name,
     }
+
+
+@router.post("/{workflow_id}/recover")
+async def recover_workflow_endpoint(
+    workflow_id: str,
+    background_tasks: BackgroundTasks,
+    current_user: UserResponse = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """从服务中断中恢复工作流执行，利用 LangGraph checkpoint 从断点继续。"""
+    workflow = await get_workflow_by_id(db, workflow_id, current_user.id)
+    if not workflow:
+        raise WorkflowNotFoundError(workflow_id)
+    if workflow.status != "running":
+        raise InvalidStateTransitionError(workflow_id, workflow.status, "recover")
+    background_tasks.add_task(recover_workflow, workflow.id, db.bind)
+    return {"workflow_id": str(workflow.id), "status": "running", "action": "recover"}
 
 
 @router.post("/{workflow_id}/decide")
@@ -174,7 +184,7 @@ async def human_decide(
         return {"workflow_id": str(workflow.id), "status": "cancelled", "action": "abort"}
 
     # jump: 启动后台恢复任务
-    background_tasks.add_task(resume_workflow, workflow.id, decision)
+    background_tasks.add_task(resume_workflow, workflow.id, decision, db.bind)
     return {
         "workflow_id": str(workflow.id),
         "status": "running",

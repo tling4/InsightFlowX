@@ -13,7 +13,6 @@ from app.db.base import Base
 from app.db.session import engine
 from app.core.checkpointer import init_checkpointer, shutdown_checkpointer
 from app.exceptions import AppException
-import app.db.models  # noqa: F401 — 确保所有 ORM 模型在 create_all 前注册
 
 logger = logging.getLogger(__name__)
 

@@ -52,6 +52,9 @@ class ReportAgent(BaseAgent):
         target = config.get("target_product", "未知产品")
         raw_data = state.get("raw_data", {}) or {}
         collection_errors = state.get("collection_errors", {}) or {}
+        source_coverage_issue = collection_errors.get("__source_coverage__")
+        hard_collection_error = collection_errors.get("__competitor_resolution__")
+        total_sources = sum(len(items) for items in raw_data.values()) if isinstance(raw_data, dict) else 0
 
         await self.log_and_broadcast(event_logger, EventType.NODE_START, {
             "input_summary": {"phase": "writing", "target_product": target},
@@ -61,12 +64,12 @@ class ReportAgent(BaseAgent):
 
         # 引用在 LLM 调用前构建，因为 LLM 不负责 URL 去重和编号
         citations = self._build_citations(raw_data)
-        hard_collection_error = (
-            collection_errors.get("__competitor_resolution__")
-            or collection_errors.get("__source_coverage__")
-        )
-        if hard_collection_error:
-            report = self._insufficient_report(target, hard_collection_error, citations)
+        if hard_collection_error or total_sources == 0:
+            report = self._insufficient_report(
+                target,
+                hard_collection_error or "公开来源不足",
+                citations,
+            )
         elif llm_is_configured():
             draft = await self.invoke_llm(
                 REPORT_SYSTEM_PROMPT,
@@ -77,6 +80,8 @@ class ReportAgent(BaseAgent):
                     "user_sentiment": state.get("user_sentiment"),
                     "swot": state.get("swot"),
                     "sources_by_product": raw_data_to_context(raw_data, max_items_per_product=4),
+                    "collection_errors": collection_errors,
+                    "source_coverage_issue": source_coverage_issue,
                 },
                 ReportDraft,
                 event_logger, workflow_id, "report_writing",

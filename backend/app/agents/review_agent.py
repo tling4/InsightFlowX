@@ -100,6 +100,8 @@ class ReviewAgent(BaseAgent):
                 }, workflow_id)
                 return {
                     "review_result": review.model_dump(mode="json"),
+                    "review_reroute_target": None,
+                    "review_result_consumed": False,
                     "current_phase": "reviewing",
                 }
             return {
@@ -117,11 +119,15 @@ class ReviewAgent(BaseAgent):
                     "target_node": review.target_node,
                 },
                 "review_result": review.model_dump(mode="json"),
+                "review_reroute_target": None,
+                "review_result_consumed": False,
                 "current_phase": "reviewing",
             }
 
         return {
             "review_result": review.model_dump(mode="json"),
+            "review_reroute_target": None,
+            "review_result_consumed": False,
             "current_phase": "reviewing",
         }
 

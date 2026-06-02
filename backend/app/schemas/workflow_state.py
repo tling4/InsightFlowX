@@ -32,3 +32,5 @@ class WorkflowState(TypedDict, total=False):
     errors: list[ErrorRecord]
     human_decision: dict
     cached_review_result: Optional[dict]
+    review_reroute_target: Optional[str]
+    review_result_consumed: bool

@@ -1,5 +1,79 @@
 # Changelog
 
+## 2026-06-02
+
+### 15. 结构化输出、重试语义与僵尸工作流修复
+
+这次主要把三条容易互相污染的链路收拢成了按 `execution_attempt` 隔离的执行模型：agent 输出不再只依赖 prompt，retry 不再复用旧 checkpoint，前端打开工作流页时也会先校验当前 attempt 的状态，再决定是否恢复。
+
+#### 修复方案
+
+- **结构化输出兜底**：`invoke_json_model` 增加“先解析校验，失败后自动修复再试一次”的兜底层。先把 LLM 原始响应抽取成 JSON，再用 Pydantic 校验；若失败，会把 `expected_schema` / `invalid_output` / `validation_error` 重新喂给模型生成修复版结果，避免把结构化能力完全押在 prompt 或 LangChain output parser 上。
+- **重试与 checkpoint 隔离**：retry 入口改为创建新的 `execution_attempt`，并将 LangGraph `thread_id` 改为 `workflow_id:execution_attempt`。这样新一轮执行不会读到旧 checkpoint；同时 retry / recover / resume 的后台任务改为使用请求绑定的 engine，避免测试或异步场景下出现跨 loop 的 session 问题。没有初始化 checkpointer 时，后台任务会优雅跳过而不是直接抛错。
+- **僵尸工作流恢复**：前端工作流页在进入运行/暂停/报告页时，会按当前 attempt 拉取 events、states、artifacts 和 trace，并在页面打开时判断是否需要从最近 checkpoint 恢复。报告页与 trace/artifact 查询也都改为按 attempt 过滤，避免混入上一轮执行数据。
+
+#### 变更文件
+
+- `backend/app/agents/agent_utils.py`
+- `backend/app/services/workflow_service.py`
+- `backend/app/core/workflow_executor.py`
+- `backend/app/api/v1/workflow.py`
+- `backend/app/api/v1/event.py`
+- `backend/app/api/v1/artifact.py`
+- `backend/app/api/v1/trace.py`
+- `frontend/app/workflows/[id]/page.tsx`
+- `frontend/lib/use-artifacts.ts`
+- `frontend/lib/use-trace.ts`
+- `frontend/types/workflow.ts`
+
+#### 验证
+
+- `backend/tests/test_human_in_the_loop.py -k "retry or recover or pause_router"` 通过
+- 前端 `eslint` 已跑，仓库里仍有若干与本次无关的既有 lint 问题
+
+### 16. 修复 review reroute 条件路由的 dict 哈希错误
+这次修复了 `review` 节点在 LangGraph conditional edges 中返回 `Command` 导致的 `unhashable type: 'dict'` 崩溃。现在 router 只返回可 hash 的节点名字符串，review 恢复路径会把一次性的 reroute 目标写入独立字段，并清理旧的 `human_decision` / `cached_review_result`，避免旧跳转在后续节点里反复生效。
+
+#### 修复方案
+
+- **条件路由收敛为字符串**：`make_pause_router()` 不再返回 `Command`，而是统一返回 `information_collection` / `analysis` / `report_writing` / `done` 这类可 hash 的路由标签，避免 LangGraph 在分支收尾阶段对 `dict` 参与哈希查找。
+- **review 恢复路径一次性消费**：`review` 节点恢复缓存结果时，新增 `review_reroute_target` 和 `review_result_consumed` 两个状态字段。router 先消费显式 reroute 目标，再在未消费时读取 `review_result.target_node`，保证人工 jump 和 agent 建议都只生效一次。
+- **测试契约同步**：更新 HITL 测试，覆盖 review 恢复时清理旧决策、保留 reroute 目标，以及条件路由直接返回字符串的行为。
+
+#### 变更文件
+
+- `backend/app/core/orchestrator.py`
+- `backend/app/core/graph_nodes.py`
+- `backend/app/agents/review_agent.py`
+- `backend/app/schemas/workflow_state.py`
+- `backend/tests/test_human_in_the_loop.py`
+
+#### 验证
+
+- `C:\Users\Void\.conda\envs\insightflow\python.exe -m pytest backend\tests\test_human_in_the_loop.py -q` 通过
+- `C:\Users\Void\.conda\envs\insightflow\python.exe -m pytest backend\tests\test_workflow_executor.py -q` 通过
+- `C:\Users\Void\.conda\envs\insightflow\python.exe -m py_compile backend\app\core\orchestrator.py backend\app\core\graph_nodes.py backend\app\agents\review_agent.py backend\app\schemas\workflow_state.py backend\tests\test_human_in_the_loop.py` 通过
+
+### 17. 修复 report_agent 在部分缺源时过早退回兜底模板
+之前 `report_writing` 节点只要命中 `collection_errors["__source_coverage__"]`，就会直接走“资料不足”报告，导致即使已有足够的可用来源，也看起来像跳过了 LLM 生成。现在这类“缺一个竞品来源”的情况只作为提示输入给 LLM，不再硬停；只有竞品解析失败或完全没有可用来源时才退回兜底报告。
+
+#### 修复方案
+
+- **放宽硬门槛**：`__source_coverage__` 从硬失败改为提示项，部分缺源时仍允许 `invoke_llm()` 生成正式报告。
+- **保留真正的硬失败**：竞品解析失败，或全部来源为 0 时，仍然回退到“资料不足”报告，避免完全空数据时编造内容。
+- **测试覆盖**：新增 `test_report_agent.py`，覆盖“部分缺源仍走 LLM”和“竞品解析失败仍回退”两种路径。
+
+#### 变更文件
+
+- `backend/app/agents/report_agent.py`
+- `backend/tests/test_report_agent.py`
+
+#### 验证
+
+- `C:\Users\Void\.conda\envs\insightflow\python.exe -m pytest backend\tests\test_report_agent.py -q` 通过
+- `C:\Users\Void\.conda\envs\insightflow\python.exe -m pytest backend\tests\test_workflow_executor.py -q` 通过
+- `C:\Users\Void\.conda\envs\insightflow\python.exe -m py_compile backend\app\agents\report_agent.py backend\tests\test_report_agent.py` 通过
+
 ## 2026-05-25
 
 ### 1. 增加全局异常处理架构

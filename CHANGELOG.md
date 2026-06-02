@@ -74,6 +74,36 @@
 - `C:\Users\Void\.conda\envs\insightflow\python.exe -m pytest backend\tests\test_workflow_executor.py -q` 通过
 - `C:\Users\Void\.conda\envs\insightflow\python.exe -m py_compile backend\app\agents\report_agent.py backend\tests\test_report_agent.py` 通过
 
+### 18. 将 DAG 右侧栏从 LLM token 流改为节点过程叙述
+之前前端工作流运行页右侧边栏直接消费 `llm_stream`，用户会看到模型逐 token 推送的原始输出，既不稳定，也暴露了不适合面向用户的底层信息。现在右侧栏改为展示节点级的“过程叙述”：后端主动发送可读的阶段说明，前端按节点聚合、回放和切换查看；原始事件只在显式调试开关下保留。
+
+#### 修复方案
+
+- **新增用户态过程事件**：在后端事件契约中新增 `node_progress`，并在 `BaseAgent` 中增加 `emit_progress()` helper。事件 payload 统一为 `stage` / `message` / `level`，用于表达“正在解析竞品”“正在整理定价信息”“正在给出审查结论”这类用户可读过程，而不是暴露模型原始推理或 token。
+- **四个业务 Agent 补发过程文案**：`CollectionAgent`、`AnalysisAgent`、`ReportAgent`、`ReviewAgent` 都在关键阶段发出稳定的过程说明；其中 `review` 失败时会明确给出建议回退节点，进入人工决策暂停时，过程文案与 `pause_reason` 保持一致。
+- **前端右栏重构为过程面板**：运行态右侧栏不再消费 `llm_stream`，而是按节点维护过程条目数组，展示 `node_progress`、节点生命周期、`review_fail`、`reroute`、`workflow_paused/failed/complete` 等事件。页面刷新后会通过 `/events` 回放重建过程面板；调试模式下可用 `NEXT_PUBLIC_ENABLE_DEBUG_EVENTS=true` 额外显示原始事件面板。
+- **收拢前后端事件语义**：前端移除对不存在的 `review_reroute` 依赖，统一只认后端真实发送的 `reroute`，避免运行态展示层继续漂移。
+
+#### 变更文件
+
+- `backend/app/schemas/event.py`
+- `backend/app/agents/base_agent.py`
+- `backend/app/agents/collection_agent.py`
+- `backend/app/agents/analysis_agent.py`
+- `backend/app/agents/report_agent.py`
+- `backend/app/agents/review_agent.py`
+- `backend/tests/test_node_progress.py`
+- `frontend/types/event.ts`
+- `frontend/lib/use-node-stream.ts`
+- `frontend/components/events/stream-panel.tsx`
+- `frontend/components/events/event-console.tsx`
+- `frontend/app/workflows/[id]/page.tsx`
+
+#### 验证
+
+- `conda run -n insightflow pytest backend\tests -q` 通过（`101 passed`）
+- `cmd /c npm run lint` 未通过，原因是当前环境缺少可执行的 `eslint`，不是本次改动触发的代码错误
+
 ## 2026-05-25
 
 ### 1. 增加全局异常处理架构

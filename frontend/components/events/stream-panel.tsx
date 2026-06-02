@@ -1,57 +1,114 @@
 "use client";
 
-import { useEffect, useRef } from "react";
-import type { AgentNodeName } from "@/types/event";
+import { useEffect, useMemo, useRef } from "react";
+import type { AgentNodeName, NodeProgressEntry } from "@/types/event";
 
-const NODE_LABELS: Record<string, string> = {
+const NODE_LABELS: Record<AgentNodeName, string> = {
   information_collection: "CollectionAgent",
   analysis: "AnalysisAgent",
   report_writing: "ReportAgent",
   review: "ReviewAgent",
 };
 
+const LEVEL_STYLES: Record<string, string> = {
+  info: "border-sky-500/20 bg-sky-500/10 text-sky-100",
+  success: "border-emerald-500/20 bg-emerald-500/10 text-emerald-100",
+  warning: "border-amber-500/20 bg-amber-500/10 text-amber-100",
+  error: "border-rose-500/20 bg-rose-500/10 text-rose-100",
+};
+
 interface Props {
   activeNode: AgentNodeName | null;
-  texts: Record<string, string>;
+  selectedNode: AgentNodeName | null;
+  entries: Record<AgentNodeName, NodeProgressEntry[]>;
+  onSelectNode: (node: AgentNodeName) => void;
 }
 
-export function StreamPanel({ activeNode, texts }: Props) {
+export function StreamPanel({ activeNode, selectedNode, entries, onSelectNode }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [texts]);
+  }, [selectedNode, entries]);
 
-  const text = activeNode ? texts[activeNode] || "" : "";
+  const orderedNodes = useMemo(
+    () => ([
+      "information_collection",
+      "analysis",
+      "report_writing",
+      "review",
+    ] as const),
+    [],
+  );
+
+  const currentEntries = selectedNode ? entries[selectedNode] || [] : [];
 
   return (
     <div className="flex-1 flex flex-col min-h-0">
-      {activeNode && (
-        <div className="px-3 py-2 border-b border-[var(--border)] bg-[var(--bg-elevated)] flex items-center gap-2">
-          <span className="relative flex h-1.5 w-1.5">
-            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
-            <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-emerald-400" />
-          </span>
-          <span className="text-xs font-medium text-[var(--text-primary)]">
-            {NODE_LABELS[activeNode] || activeNode}
-          </span>
-          <span className="text-[10px] text-[var(--text-muted)]">streaming...</span>
+      <div className="px-3 py-3 border-b border-[var(--border)] bg-[var(--bg-elevated)] space-y-3">
+        <div className="flex items-center gap-2">
+          {activeNode ? (
+            <>
+              <span className="relative flex h-1.5 w-1.5">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+                <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-emerald-400" />
+              </span>
+              <span className="text-xs font-medium text-[var(--text-primary)]">
+                当前执行: {NODE_LABELS[activeNode]}
+              </span>
+            </>
+          ) : (
+            <span className="text-xs font-medium text-[var(--text-primary)]">节点过程叙述</span>
+          )}
         </div>
-      )}
-      <div ref={scrollRef} className="flex-1 overflow-y-auto p-3 font-mono text-xs leading-relaxed whitespace-pre-wrap">
-        {text ? (
-          <span className="text-[var(--text-secondary)]">{text}</span>
+        <div className="flex flex-wrap gap-2">
+          {orderedNodes.map((node) => {
+            const isSelected = selectedNode === node;
+            const count = entries[node]?.length || 0;
+            const isActive = activeNode === node;
+            return (
+              <button
+                key={node}
+                onClick={() => onSelectNode(node)}
+                className={`rounded-full border px-2.5 py-1 text-[11px] transition-colors ${
+                  isSelected
+                    ? "border-emerald-500/40 bg-emerald-500/10 text-[var(--text-primary)]"
+                    : "border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+                }`}
+              >
+                {NODE_LABELS[node]}
+                {isActive ? " · 运行中" : ""}
+                {count > 0 ? ` · ${count}` : ""}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      <div ref={scrollRef} className="flex-1 overflow-y-auto p-3 space-y-3">
+        {currentEntries.length > 0 ? (
+          currentEntries.map((entry, index) => (
+            <div
+              key={`${entry.node}-${entry.seq ?? index}-${entry.created_at}`}
+              className={`rounded-xl border p-3 ${LEVEL_STYLES[entry.level] || LEVEL_STYLES.info}`}
+            >
+              <div className="flex items-center justify-between gap-3 text-[10px] uppercase tracking-wide opacity-80">
+                <span>{entry.stage.replaceAll("_", " ")}</span>
+                <span>{new Date(entry.created_at).toLocaleTimeString("zh-CN", { hour12: false })}</span>
+              </div>
+              <p className="mt-1 text-xs leading-5">{entry.message}</p>
+            </div>
+          ))
         ) : (
-          <span className="text-[var(--text-muted)] italic">
-            {activeNode
-              ? "Waiting for output..."
-              : "DAG execution started. LLM output will appear here as nodes execute."}
-          </span>
-        )}
-        {activeNode && text && (
-          <span className="inline-block w-2 h-3.5 bg-emerald-400/80 ml-0.5 animate-pulse align-middle" />
+          <div className="h-full flex items-center justify-center text-center px-6">
+            <span className="text-[var(--text-muted)] text-xs italic">
+              {selectedNode
+                ? "该节点还没有可展示的过程说明。"
+                : "工作流开始后，这里会展示每个节点的执行过程说明。"}
+            </span>
+          </div>
         )}
       </div>
     </div>

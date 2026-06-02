@@ -45,6 +45,27 @@ class BaseAgent:
             "created_at": str(event.created_at),
         })
 
+    async def emit_progress(
+        self,
+        event_logger: EventLogger,
+        workflow_id: uuid.UUID,
+        *,
+        stage: str,
+        message: str,
+        level: str = "info",
+    ) -> None:
+        """发送用户可见的节点过程说明，不暴露模型原始 token。"""
+        await self.log_and_broadcast(
+            event_logger,
+            EventType.NODE_PROGRESS,
+            {
+                "stage": stage,
+                "message": message,
+                "level": level,
+            },
+            workflow_id,
+        )
+
     async def stream_llm_token(self, workflow_id: uuid.UUID, token: str) -> None:
         """向 SSE 订阅者广播 LLM 流式输出的单个 token 块。
 

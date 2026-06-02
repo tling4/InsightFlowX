@@ -88,8 +88,6 @@ export function DagCanvas({ nodeStates, hasReroute, onRetry }: Props) {
         animated: true,
         style: { stroke: "#f59e0b", strokeWidth: 2.5, strokeDasharray: "8 4" },
         markerEnd: { type: MarkerType.ArrowClosed, color: "#f59e0b" },
-        label: "REROUTE",
-        labelStyle: { fill: "#f59e0b", fontSize: 10, fontWeight: 700 },
       } as Edge);
     }
 

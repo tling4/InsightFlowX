@@ -42,10 +42,28 @@ class ReviewAgent(BaseAgent):
         await self.log_and_broadcast(event_logger, EventType.NODE_START, {
             "input_summary": {"phase": "reviewing"},
         }, workflow_id)
+        await self.emit_progress(
+            event_logger,
+            workflow_id,
+            stage="check_source_coverage",
+            message="正在检查目标产品与竞品的来源覆盖情况。",
+        )
+        await self.emit_progress(
+            event_logger,
+            workflow_id,
+            stage="check_structure",
+            message="正在检查分析结构、报告完整性与结论一致性。",
+        )
 
         start = time.time()
 
         if llm_is_configured():
+            await self.emit_progress(
+                event_logger,
+                workflow_id,
+                stage="review_decision",
+                message="正在综合来源、分析结果与报告内容给出审查结论。",
+            )
             review = await self.invoke_llm(
                 REVIEW_SYSTEM_PROMPT,
                 {
@@ -71,6 +89,13 @@ class ReviewAgent(BaseAgent):
                 "passed": review.passed,
             }, workflow_id)
         else:
+            await self.emit_progress(
+                event_logger,
+                workflow_id,
+                stage="rule_based_review",
+                message="未使用实时模型审查，当前将按规则检查报告质量与来源完整性。",
+                level="warning",
+            )
             review = self._rule_based_review(state)
 
         duration_ms = int((time.time() - start) * 1000)
@@ -83,6 +108,23 @@ class ReviewAgent(BaseAgent):
             "target_node": review.target_node,
             "specific_issues": review.specific_issues,
         }, workflow_id)
+        if review.passed:
+            await self.emit_progress(
+                event_logger,
+                workflow_id,
+                stage="review_passed",
+                message=f"审查通过，当前评分 {review.score}，报告可以进入完成态。",
+                level="success",
+            )
+        else:
+            reroute_target = review.target_node or "analysis"
+            await self.emit_progress(
+                event_logger,
+                workflow_id,
+                stage="review_failed",
+                message=f"当前结果未通过审查，建议回退到 {reroute_target} 节点。原因：{review.feedback or '需要继续修订'}",
+                level="warning",
+            )
 
         await self.log_and_broadcast(event_logger, EventType.NODE_COMPLETE, {
             "output_summary": {"passed": review.passed, "score": review.score},
@@ -93,6 +135,13 @@ class ReviewAgent(BaseAgent):
             revision_count = state.get("revision_count", 0)
             max_revisions = state.get("max_revisions", 3)
             if revision_count >= max_revisions:
+                await self.emit_progress(
+                    event_logger,
+                    workflow_id,
+                    stage="review_max_revisions",
+                    message=f"已达到最大修订次数 {max_revisions}，本轮将停止继续回退。",
+                    level="warning",
+                )
                 await self.log_and_broadcast(event_logger, EventType.REVIEW_FAILED_MAX_REVISIONS, {
                     "revision_count": revision_count,
                     "max_revisions": max_revisions,
@@ -104,9 +153,17 @@ class ReviewAgent(BaseAgent):
                     "review_result_consumed": False,
                     "current_phase": "reviewing",
                 }
+            pause_reason = review.feedback or f"报告评分 {review.score}，未通过质检"
+            await self.emit_progress(
+                event_logger,
+                workflow_id,
+                stage="await_human_decision",
+                message=pause_reason,
+                level="warning",
+            )
             return {
                 "__pause__": True,
-                "pause_reason": review.feedback or f"报告评分 {review.score}，未通过质检",
+                "pause_reason": pause_reason,
                 "pause_options": [
                     {"value": "jump", "label": "按建议重试", "target_node": review.target_node or "analysis"},
                     {"value": "approve", "label": "强制通过（接受当前报告）"},

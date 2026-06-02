@@ -59,18 +59,43 @@ class ReportAgent(BaseAgent):
         await self.log_and_broadcast(event_logger, EventType.NODE_START, {
             "input_summary": {"phase": "writing", "target_product": target},
         }, workflow_id)
+        await self.emit_progress(
+            event_logger,
+            workflow_id,
+            stage="outline_report",
+            message="正在组织报告结构，并准备执行摘要、主体章节与引用列表。",
+        )
 
         start = time.time()
 
         # 引用在 LLM 调用前构建，因为 LLM 不负责 URL 去重和编号
         citations = self._build_citations(raw_data)
+        await self.emit_progress(
+            event_logger,
+            workflow_id,
+            stage="prepare_citations",
+            message=f"已整理 {len(citations)} 条候选引用，准备写入报告上下文。",
+        )
         if hard_collection_error or total_sources == 0:
+            await self.emit_progress(
+                event_logger,
+                workflow_id,
+                stage="insufficient_sources",
+                message=f"公开来源不足，当前将生成说明性报告而不是完整交付稿。原因：{hard_collection_error or '公开来源不足'}",
+                level="warning",
+            )
             report = self._insufficient_report(
                 target,
                 hard_collection_error or "公开来源不足",
                 citations,
             )
         elif llm_is_configured():
+            await self.emit_progress(
+                event_logger,
+                workflow_id,
+                stage="draft_report",
+                message="正在撰写执行摘要，并整合功能、定价、反馈与 SWOT 内容。",
+            )
             draft = await self.invoke_llm(
                 REPORT_SYSTEM_PROMPT,
                 {
@@ -100,10 +125,31 @@ class ReportAgent(BaseAgent):
                 full_markdown=self._append_citations(draft.full_markdown, citations),
                 generated_at=datetime.utcnow(),
             )
+            await self.emit_progress(
+                event_logger,
+                workflow_id,
+                stage="report_draft_ready",
+                message=f"报告草稿已生成，当前包含 {len(draft.sections)} 个主要章节。",
+                level="success",
+            )
         else:
+            await self.emit_progress(
+                event_logger,
+                workflow_id,
+                stage="fallback_report",
+                message="未使用实时模型写作，当前将基于结构化结果生成模板化报告。",
+                level="warning",
+            )
             report = self._fallback_report(target, config, state, citations)
 
         duration_ms = int((time.time() - start) * 1000)
+        await self.emit_progress(
+            event_logger,
+            workflow_id,
+            stage="finalize_report",
+            message=f"报告整理完成，已附加 {len(report.citations)} 条引用并输出 Markdown 成稿。",
+            level="success",
+        )
 
         await self.log_and_broadcast(event_logger, EventType.NODE_COMPLETE, {
             "output_summary": {

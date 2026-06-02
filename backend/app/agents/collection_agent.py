@@ -65,6 +65,12 @@ class CollectionAgent(BaseAgent):
                 "phase": "collecting",
             },
         }, workflow_id)
+        await self.emit_progress(
+            event_logger,
+            workflow_id,
+            stage="validate_scope",
+            message=f"正在校验目标产品与竞品范围，当前目标是 {target or '未命名产品'}。",
+        )
 
         start = time.time()
 
@@ -73,10 +79,23 @@ class CollectionAgent(BaseAgent):
         competitors = [CompetitorInfo(name=name, category=category).model_dump(mode="json") for name in competitor_names]
 
         if not tavily_is_configured():
+            await self.emit_progress(
+                event_logger,
+                workflow_id,
+                stage="search_unavailable",
+                message="未检测到 Tavily 配置，当前将跳过实时搜索，仅保留诊断信息。",
+                level="warning",
+            )
             for product in products:
                 collection_errors[product] = "Tavily API key is not configured; skipped live search."
         else:
             client = AsyncTavilyClient(api_key=get_settings().TAVILY_API_KEY)
+            await self.emit_progress(
+                event_logger,
+                workflow_id,
+                stage="resolve_competitors",
+                message="正在解析有效竞品实体，剔除不适合作为竞品的泛化描述。",
+            )
             resolution = await resolve_competitors(
                 client=client,
                 target_product=target,
@@ -104,11 +123,25 @@ class CollectionAgent(BaseAgent):
                 CompetitorInfo(name=name, category=category).model_dump(mode="json")
                 for name in competitor_names
             ]
+            await self.emit_progress(
+                event_logger,
+                workflow_id,
+                stage="resolved_competitors",
+                message=f"已确认 {len(competitor_names)} 个有效竞品，准备开始公开来源采集。",
+                level="success",
+            )
             minimum_competitors = 1 if competitor_count <= 1 else min(2, competitor_count)
             if len(competitor_names) < minimum_competitors:
                 collection_errors["__competitor_resolution__"] = (
                     f"Only resolved {len(competitor_names)} valid competitor(s); "
                     f"at least {minimum_competitors} required before analysis."
+                )
+                await self.emit_progress(
+                    event_logger,
+                    workflow_id,
+                    stage="insufficient_competitors",
+                    message=f"有效竞品数量不足，当前仅确认 {len(competitor_names)} 个，后续分析可能无法继续。",
+                    level="warning",
                 )
                 raw_data = {}
                 products = []
@@ -116,6 +149,12 @@ class CollectionAgent(BaseAgent):
                 # 目标产品也参与搜索，确保分析时有自身数据做基线对比。
                 products = [p for p in [target, *competitor_names] if p]
                 raw_data = {product: [] for product in products}
+                await self.emit_progress(
+                    event_logger,
+                    workflow_id,
+                    stage="collect_sources",
+                    message=f"正在为 {len(products)} 个产品搜索公开来源，并并发收集可用证据。",
+                )
                 # 所有产品的搜索并发执行，总耗时 = max(单产品耗时) 而非 sum
                 tasks = [
                     self._collect_for_product(client, product, category, focus_dimensions, event_logger, workflow_id)
@@ -142,9 +181,23 @@ class CollectionAgent(BaseAgent):
                     collection_errors["__source_coverage__"] = (
                         "Missing source coverage for: " + ", ".join(missing_sources)
                     )
+                    await self.emit_progress(
+                        event_logger,
+                        workflow_id,
+                        stage="source_coverage_warning",
+                        message=f"部分产品仍缺少来源覆盖：{', '.join(missing_sources)}。",
+                        level="warning",
+                    )
 
         duration_ms = int((time.time() - start) * 1000)
         total_sources = sum(len(items) for items in raw_data.values())
+        await self.emit_progress(
+            event_logger,
+            workflow_id,
+            stage="collection_complete",
+            message=f"已完成采集，共覆盖 {len(raw_data)} 个产品，汇总 {total_sources} 条来源。",
+            level="success",
+        )
 
         await self.log_and_broadcast(event_logger, EventType.NODE_COMPLETE, {
             "output_summary": {
@@ -184,6 +237,12 @@ class CollectionAgent(BaseAgent):
         focus = " ".join(focus_dimensions[:4]) if focus_dimensions else "功能 定价 用户评价 市场定位"
         queries = [template.format(product=product) for template in templates]
         queries.append(f"{product} {focus}")
+        await self.emit_progress(
+            event_logger,
+            workflow_id,
+            stage="search_product",
+            message=f"正在为 {product} 搜索公开来源并筛选高相关结果。",
+        )
 
         await self.log_and_broadcast(event_logger, EventType.TOOL_CALL, {
             "tool": "tavily.search",
@@ -221,6 +280,13 @@ class CollectionAgent(BaseAgent):
             "product": product,
             "source_count": len(collected),
         }, workflow_id)
+        await self.emit_progress(
+            event_logger,
+            workflow_id,
+            stage="summarize_product_sources",
+            message=f"{product} 的来源整理完成，当前保留 {len(collected)} 条去重结果。",
+            level="success",
+        )
         return collected
 
     def _result_mentions_product(self, product: str, item: dict) -> bool:

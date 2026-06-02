@@ -26,20 +26,22 @@ function formatEventMessage(e: WorkflowEvent): string {
   switch (e.event_type) {
     case "node_start":
       return "Started";
+    case "node_progress":
+      return String(payload?.message || "Node progress");
     case "node_complete":
       return `Completed in ${payload?.duration_ms || "?"}ms`;
     case "node_error":
       return `ERROR: ${payload?.error_message || ""}`;
     case "tool_call":
-      return `Search "${payload?.query || "..."}"`;
+      return `Call ${payload?.tool || "tool"}`;
     case "tool_result":
-      return `${payload?.result_count || "?"} results`;
+      return `Result from ${payload?.tool || "tool"}`;
     case "review_pass":
       return `PASSED — score: ${payload?.score || "?"}`;
     case "review_fail":
       return `FAILED — ${payload?.feedback || ""}`;
-    case "review_reroute":
-      return `Reroute → ${payload?.target_node || "analysis"} (r${payload?.revision || "?"})`;
+    case "reroute":
+      return `Reroute → ${payload?.to_node || payload?.target_node || "analysis"}`;
     case "workflow_complete":
       return "★★★ Workflow COMPLETED ★★★";
     case "workflow_failed":
@@ -84,14 +86,15 @@ export function EventConsole({ events }: Props) {
       </div>
       <div ref={scrollRef} className="flex-1 overflow-y-auto p-2 font-mono text-[11px] leading-6">
         {filtered.map((e, i) => {
-          const color = NODE_COLORS[e.node_name] || "#a1a1aa";
+          const nodeName = e.node_name || "review";
+          const color = NODE_COLORS[nodeName] || "#a1a1aa";
           const time = new Date(e.created_at).toLocaleTimeString("zh-CN", { hour12: false });
           return (
             <div key={i} className="flex items-baseline gap-2 py-0.5 px-1 hover:bg-[var(--bg-elevated)] rounded">
               <span className="text-[var(--text-muted)] shrink-0 w-14">{time}</span>
-              <span className="text-[var(--text-muted)] shrink-0 w-7 text-right">[{e.seq}]</span>
+              <span className="text-[var(--text-muted)] shrink-0 w-7 text-right">[{e.seq ?? "-"}]</span>
               <span style={{ color }} className="shrink-0 w-16 font-medium">
-                {SHORT_NODE[e.node_name] || e.node_name || "sys"}
+                {SHORT_NODE[nodeName] || nodeName || "sys"}
               </span>
               <span className="text-[var(--text-secondary)]">{formatEventMessage(e)}</span>
             </div>

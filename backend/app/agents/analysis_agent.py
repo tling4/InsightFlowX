@@ -77,10 +77,22 @@ class AnalysisAgent(BaseAgent):
                 "source_count": sum(len(items) for items in raw_data.values()) if isinstance(raw_data, dict) else 0,
             },
         }, workflow_id)
+        await self.emit_progress(
+            event_logger,
+            workflow_id,
+            stage="prepare_context",
+            message="正在整理采集来源并建立比较上下文，为后续分析准备统一基线。",
+        )
 
         start = time.time()
 
         if llm_is_configured() and raw_data:
+            await self.emit_progress(
+                event_logger,
+                workflow_id,
+                stage="run_analysis",
+                message="正在比较功能维度、整理定价信息、归纳用户反馈并生成 SWOT 结论。",
+            )
             bundle = await self.invoke_llm(
                 ANALYSIS_SYSTEM_PROMPT,
                 {
@@ -110,12 +122,54 @@ class AnalysisAgent(BaseAgent):
                 user_sentiment,
                 products,
             )
+            await self.emit_progress(
+                event_logger,
+                workflow_id,
+                stage="feature_matrix_ready",
+                message=f"功能对比已完成，当前覆盖 {len(feature_matrix.dimensions)} 个分析维度。",
+                level="success",
+            )
+            await self.emit_progress(
+                event_logger,
+                workflow_id,
+                stage="pricing_ready",
+                message=f"定价信息已整理完成，当前输出 {len(pricing_comparison.plans)} 组产品方案。",
+                level="success",
+            )
+            await self.emit_progress(
+                event_logger,
+                workflow_id,
+                stage="sentiment_ready",
+                message=f"用户反馈归纳完成，当前覆盖 {len(user_sentiment.per_product)} 个产品。",
+                level="success",
+            )
+            await self.emit_progress(
+                event_logger,
+                workflow_id,
+                stage="swot_ready",
+                message="SWOT 结论已生成，正在汇总结构化分析结果。",
+                level="success",
+            )
         else:
+            await self.emit_progress(
+                event_logger,
+                workflow_id,
+                stage="fallback_analysis",
+                message="未使用实时模型分析，当前将根据现有来源生成规则化分析草稿。",
+                level="warning",
+            )
             feature_matrix, pricing_comparison, user_sentiment, swot = self._fallback_analysis(
                 target, competitors, focus_dimensions, raw_data
             )
 
         duration_ms = int((time.time() - start) * 1000)
+        await self.emit_progress(
+            event_logger,
+            workflow_id,
+            stage="analysis_complete",
+            message="结构化分析已完成，结果可用于生成竞品分析报告。",
+            level="success",
+        )
 
         await self.log_and_broadcast(event_logger, EventType.NODE_COMPLETE, {
             "output_summary": {

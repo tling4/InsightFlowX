@@ -14,7 +14,6 @@ import { useNodeStream } from "@/lib/use-node-stream";
 import { AuthGuard } from "@/components/auth/auth-guard";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { ChatStream } from "@/components/interview/chat-stream";
@@ -22,6 +21,7 @@ import { ConfigPanel } from "@/components/interview/config-panel";
 import { DagCanvas } from "@/components/dag/dag-canvas";
 import type { NodeStatus } from "@/components/dag/dag-canvas";
 import { StreamPanel } from "@/components/events/stream-panel";
+import { EventConsole } from "@/components/events/event-console";
 import { ReportViewer } from "@/components/report/report-viewer";
 import { OutlineNav } from "@/components/report/outline-nav";
 import { EvidencePanel } from "@/components/report/evidence-panel";
@@ -34,8 +34,9 @@ import { statusLabel, statusColor } from "@/lib/utils";
 import type { InterviewMessage } from "@/types/interview";
 import type { WorkflowConfig, WorkflowDetail } from "@/types/workflow";
 import type { WorkflowEvent, AgentNodeName } from "@/types/event";
-import type { ReportOutput, SWOTAnalysis, FeatureMatrix, ArtifactListItem } from "@/types/artifact";
-import type { TraceLink } from "@/types/trace";
+import type { ReportOutput, SWOTAnalysis, FeatureMatrix } from "@/types/artifact";
+
+const SHOW_DEBUG_EVENTS = process.env.NEXT_PUBLIC_ENABLE_DEBUG_EVENTS === "true";
 
 export default function WorkflowStudioPage() {
   const { id } = useParams<{ id: string }>();
@@ -325,7 +326,8 @@ function DagRuntimeView({ workflowId, token, workflow }: { workflowId: string; t
     review: { status: "idle" },
   });
   const [hasReroute, setHasReroute] = useState(false);
-  const { activeNode, texts, pushToken, setActiveNode } = useNodeStream();
+  const { activeNode, selectedNode, entries, appendEvent, rebuildFromEvents, setSelectedNode } = useNodeStream();
+  const [debugEvents, setDebugEvents] = useState<WorkflowEvent[]>([]);
   const [dialogInput, setDialogInput] = useState("");
   const [dialogMessages, setDialogMessages] = useState<Array<{ role: "user" | "system"; content: string; time: string }>>([]);
   const [deciding, setDeciding] = useState(false);
@@ -333,25 +335,62 @@ function DagRuntimeView({ workflowId, token, workflow }: { workflowId: string; t
   const [recoveryState, setRecoveryState] = useState<"idle" | "recovering" | "failed">("idle");
   const recoveryTriggeredRef = useRef(false);
 
+  const patchWorkflowCache = useCallback((patch: Partial<WorkflowDetail>) => {
+    qc.setQueryData<WorkflowDetail | undefined>(["workflow", workflowId], (current) => {
+      if (!current) return current;
+      return { ...current, ...patch };
+    });
+  }, [qc, workflowId]);
+
   const handleEvent = useCallback((e: WorkflowEvent) => {
-    // llm_stream events carry per-token content at top level (not in payload)
-    if (e.event_type === "llm_stream") {
-      const content = (e as unknown as { content: string }).content;
-      if (content && e.node_name) {
-        pushToken(e.node_name as AgentNodeName, content);
-      }
-      return;
+    if (SHOW_DEBUG_EVENTS) {
+      setDebugEvents((prev) => [...prev.slice(-199), e]);
     }
 
-    // Track active node to reset stream panel when a new node starts
     if (e.event_type === "node_start" && e.node_name) {
-      setActiveNode(e.node_name as AgentNodeName);
       setRecoveryState("idle");
+    }
+
+    if (e.event_type === "workflow_resumed") {
+      patchWorkflowCache({ status: "running", pause_state: null });
+    }
+    if (e.event_type === "workflow_paused") {
+      patchWorkflowCache({
+        status: "paused",
+        pause_state: {
+          paused_by_node: String((e as Record<string, unknown>).paused_by_node || "review"),
+          pause_reason: String((e as Record<string, unknown>).pause_reason || "等待人工决策"),
+          pause_options: ((e as Record<string, unknown>).pause_options as Array<{ value: string; label: string; target_node?: string }>) || [],
+          pause_context: ((e as Record<string, unknown>).pause_context as Record<string, unknown>) || {},
+          paused_at: String((e as Record<string, unknown>).paused_at || new Date().toISOString()),
+        },
+      });
+    }
+    if (e.event_type === "workflow_complete") {
+      patchWorkflowCache({ status: "completed", pause_state: null });
+    }
+    if (e.event_type === "workflow_failed") {
+      patchWorkflowCache({ status: "failed", pause_state: null });
+    }
+
+    const PROCESS_EVENTS = [
+      "node_progress",
+      "node_start",
+      "node_complete",
+      "node_error",
+      "review_fail",
+      "reroute",
+      "workflow_paused",
+      "workflow_failed",
+      "workflow_complete",
+    ];
+    if (PROCESS_EVENTS.includes(e.event_type)) {
+      appendEvent(e);
     }
 
     // Only node lifecycle events affect nodeStates; skip irrelevant ones
     // to prevent ReactFlow from rebuilding all nodes on every SSE event
-    const NODE_EVENTS = ["node_start", "node_complete", "node_error", "review_reroute", "reroute"];
+    const NODE_EVENTS = ["node_start", "node_complete", "node_error", "reroute"];
     if (!NODE_EVENTS.includes(e.event_type)) return;
 
     setNodeStates((prev) => {
@@ -376,21 +415,21 @@ function DagRuntimeView({ workflowId, token, workflow }: { workflowId: string; t
         case "node_error":
           next[node] = { ...next[node], status: "failed", message: (payload?.error_message as string) || "Error" };
           break;
-        case "review_reroute":
         case "reroute":
           next.review = { ...next.review, status: "rerouted", message: "Rerouting..." };
-          if (payload?.target_node) {
-            next[payload.target_node as AgentNodeName] = { ...next[payload.target_node as AgentNodeName], status: "idle" };
+          if (payload?.to_node || payload?.target_node) {
+            const rerouteTarget = (payload?.to_node || payload?.target_node) as AgentNodeName;
+            next[rerouteTarget] = { ...next[rerouteTarget], status: "idle" };
           }
           break;
       }
       return next;
     });
 
-    if (e.event_type === "review_reroute" || e.event_type === "reroute") {
+    if (e.event_type === "reroute") {
       setHasReroute(true);
     }
-  }, [pushToken, setActiveNode]);
+  }, [appendEvent, patchWorkflowCache]);
 
   const handleSendDialog = () => {
     const text = dialogInput.trim();
@@ -430,6 +469,13 @@ function DagRuntimeView({ workflowId, token, workflow }: { workflowId: string; t
         content: `已提交决策: ${action === "jump" ? `重试 ${targetNode || ""}` : action === "approve" ? "强制通过" : "放弃"}`,
         time: new Date().toLocaleTimeString("zh-CN", { hour12: false }),
       }]);
+      if (action === "jump") {
+        patchWorkflowCache({ status: "running", pause_state: null });
+      } else if (action === "approve") {
+        patchWorkflowCache({ status: "completed", pause_state: null });
+      } else if (action === "abort") {
+        patchWorkflowCache({ status: "cancelled", pause_state: null });
+      }
       // 失效 workflow 缓存：approve→completed / abort→cancelled / jump→running 切换不依赖 SSE 到达
       qc.invalidateQueries({ queryKey: ["workflow", workflowId] });
       qc.invalidateQueries({ queryKey: ["workflows"] });
@@ -447,7 +493,7 @@ function DagRuntimeView({ workflowId, token, workflow }: { workflowId: string; t
 
     const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000/api/v1";
 
-    const rebuildFromEvents = (list: WorkflowEvent[]) => {
+    const rebuildNodeStatesFromEvents = (list: WorkflowEvent[]) => {
       const rebuilt: Record<AgentNodeName, { status: NodeStatus; message?: string; duration_ms?: number }> = {
         information_collection: { status: "idle" },
         analysis: { status: "idle" },
@@ -458,7 +504,7 @@ function DagRuntimeView({ workflowId, token, workflow }: { workflowId: string; t
       let lastEventTime = 0;
       let hasLifecycleEvents = false;
 
-      for (const e of [...list].sort((a, b) => a.seq - b.seq)) {
+      for (const e of [...list].sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0))) {
         const node = e.node_name as AgentNodeName;
         if (!node) continue;
         const payload = e.payload as Record<string, unknown> | undefined;
@@ -480,11 +526,11 @@ function DagRuntimeView({ workflowId, token, workflow }: { workflowId: string; t
             rebuilt[node] = { ...rebuilt[node], status: "failed", message: (payload?.error_message as string) || "Error" };
             hasLifecycleEvents = true;
             break;
-          case "review_reroute":
           case "reroute":
             rebuilt.review = { ...rebuilt.review, status: "rerouted", message: "Rerouting..." };
-            if (payload?.target_node) {
-              rebuilt[payload.target_node as AgentNodeName] = { ...rebuilt[payload.target_node as AgentNodeName], status: "idle" };
+            if (payload?.to_node || payload?.target_node) {
+              const rerouteTarget = (payload?.to_node || payload?.target_node) as AgentNodeName;
+              rebuilt[rerouteTarget] = { ...rebuilt[rerouteTarget], status: "idle" };
             }
             reroute = true;
             break;
@@ -511,7 +557,11 @@ function DagRuntimeView({ workflowId, token, workflow }: { workflowId: string; t
         const eventsBody = await eventsRes.json().catch(() => ({}));
         const statesBody = await statesRes.json().catch(() => []);
         const eventList: WorkflowEvent[] = Array.isArray(eventsBody) ? eventsBody : (eventsBody?.items ?? []);
-        const eventState = rebuildFromEvents(eventList);
+        rebuildFromEvents(eventList);
+        if (SHOW_DEBUG_EVENTS) {
+          setDebugEvents(eventList);
+        }
+        const eventState = rebuildNodeStatesFromEvents(eventList);
 
         setNodeStates(eventState.rebuilt);
         setHasReroute(eventState.reroute);
@@ -549,7 +599,7 @@ function DagRuntimeView({ workflowId, token, workflow }: { workflowId: string; t
     };
 
     void maybeRecover();
-  }, [workflowId, token, isPaused, workflow.status, workflow.updated_at, executionAttempt, qc]);
+  }, [workflowId, token, isPaused, workflow.status, workflow.updated_at, executionAttempt, qc, rebuildFromEvents]);
 
   useWorkflowStream({
     workflowId,
@@ -659,12 +709,24 @@ function DagRuntimeView({ workflowId, token, workflow }: { workflowId: string; t
         )}
       </div>
 
-      {/* Right: Live Stream panel */}
-      <div className="w-[400px] border-l border-[var(--border)] flex flex-col" style={{ backgroundColor: "var(--bg-primary)" }}>
-        <div className="px-3 py-2 border-b border-[var(--border)] bg-[var(--bg-elevated)]">
-          <span className="text-xs font-medium text-[var(--text-primary)]">Live Stream</span>
+      {/* Right: Node process panel */}
+      <div className="w-[400px] border-l border-[var(--border)] flex flex-col min-h-0" style={{ backgroundColor: "var(--bg-primary)" }}>
+        <div className={`${SHOW_DEBUG_EVENTS ? "flex-[0_0_58%]" : "flex-1"} min-h-0 flex flex-col`}>
+          <div className="px-3 py-2 border-b border-[var(--border)] bg-[var(--bg-elevated)]">
+            <span className="text-xs font-medium text-[var(--text-primary)]">节点过程叙述</span>
+          </div>
+          <StreamPanel
+            activeNode={activeNode}
+            selectedNode={selectedNode}
+            entries={entries}
+            onSelectNode={setSelectedNode}
+          />
         </div>
-        <StreamPanel activeNode={activeNode} texts={texts} />
+        {SHOW_DEBUG_EVENTS && (
+          <div className="flex-[0_0_42%] min-h-0 border-t border-[var(--border)] p-3">
+            <EventConsole events={debugEvents} />
+          </div>
+        )}
       </div>
     </div>
   );
@@ -726,7 +788,7 @@ function ReportView({ workflowId, workflowStatus, executionAttempt }: { workflow
     if (workflowStatus !== "completed" && workflowStatus !== "failed") return;
     if (!token) return;
     const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000/api/v1";
-    fetch(`${baseUrl}/workflows/${workflowId}/events?event_type=review_pass&event_type=review_fail&event_type=review_reroute&execution_attempt=${executionAttempt}`, {
+    fetch(`${baseUrl}/workflows/${workflowId}/events?execution_attempt=${executionAttempt}&limit=200`, {
       headers: { Authorization: `Bearer ${token}` },
     })
       .then((r) => r.json())

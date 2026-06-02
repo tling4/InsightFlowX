@@ -1,10 +1,10 @@
 export type EventType =
   | "node_start"
+  | "node_progress"
   | "node_complete"
   | "node_error"
   | "review_pass"
   | "review_fail"
-  | "review_reroute"
   | "reroute"
   | "tool_call"
   | "tool_result"
@@ -25,14 +25,15 @@ export type AgentNodeName =
   | "review";
 
 export interface WorkflowEvent {
-  id: string;
-  workflow_id: string;
-  node_name: AgentNodeName;
-  iteration: number;
+  id?: string;
+  workflow_id?: string;
+  node_name?: AgentNodeName;
+  iteration?: number;
   event_type: EventType;
-  seq: number;
+  seq?: number;
   payload: Record<string, unknown>;
   created_at: string;
+  content?: string;
 }
 
 export interface NodeState {
@@ -41,4 +42,16 @@ export interface NodeState {
   message?: string;
   duration_ms?: number;
   started_at?: string;
+}
+
+export type NodeProgressLevel = "info" | "success" | "warning" | "error";
+
+export interface NodeProgressEntry {
+  node: AgentNodeName;
+  stage: string;
+  message: string;
+  level: NodeProgressLevel;
+  created_at: string;
+  seq?: number;
+  event_type: EventType;
 }

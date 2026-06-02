@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 
 class EventType(str, Enum):
     NODE_START = "node_start"
+    NODE_PROGRESS = "node_progress"
     NODE_COMPLETE = "node_complete"
     NODE_ERROR = "node_error"
     REVIEW_PASS = "review_pass"
@@ -32,6 +33,12 @@ class EventPayload(BaseModel):
 class NodeStartPayload(EventPayload):
     input_summary: dict = Field(default_factory=dict)
     node_config: dict = Field(default_factory=dict)
+
+
+class NodeProgressPayload(EventPayload):
+    stage: str = ""
+    message: str = ""
+    level: str = "info"
 
 
 class NodeCompletePayload(EventPayload):

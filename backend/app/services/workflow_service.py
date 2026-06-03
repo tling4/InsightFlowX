@@ -57,6 +57,9 @@ async def start_workflow(
         raise ConfigIncompleteError(workflow_id, missing_fields=["target_product"])
     workflow.status = "running"
     workflow.current_phase = "collecting"
+    workflow.current_run_id = None
+    workflow.pause_state = None
+    workflow.error_message = None
     await db.commit()
     await db.refresh(workflow)
     return workflow
@@ -88,6 +91,7 @@ async def restart_workflow(
     workflow.total_tokens = 0
     workflow.execution_attempt += 1
     workflow.langgraph_checkpoint_id = None
+    workflow.current_run_id = None
     await db.commit()
     await db.refresh(workflow)
     return workflow

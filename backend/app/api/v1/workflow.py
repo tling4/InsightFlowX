@@ -12,6 +12,10 @@ from app.services.event_service import EventLogger
 from app.schemas.event import EventType
 from app.core.workflow_executor import run_workflow, resume_workflow, recover_workflow
 from app.exceptions import WorkflowNotFoundError, InvalidStateTransitionError
+from app.db.models.workflow_run import WorkflowRun
+from app.db.models.workflow_pause import WorkflowPause
+from sqlalchemy import select
+from datetime import datetime, timezone
 
 
 router = APIRouter(prefix="/workflows", tags=["workflows"])
@@ -53,6 +57,7 @@ async def get_workflow_detail(
         "config": workflow.config,
         "revision_count": workflow.revision_count,
         "execution_attempt": workflow.execution_attempt,
+        "current_run_id": str(workflow.current_run_id) if workflow.current_run_id else None,
         "max_revisions": workflow.max_revisions,
         "total_tokens": workflow.total_tokens,
         "error_message": workflow.error_message,
@@ -87,8 +92,12 @@ async def delete_workflow_endpoint(
     current_user: UserResponse = Depends(get_current_user),
     db: AsyncSession = Depends(get_async_session),
 ):
-    """删除工作流。运行中的工作流会先取消再删除。"""
-    await cancel_workflow(db, workflow_id, current_user.id)
+    """删除工作流。非终态先取消，终态直接删除。"""
+    workflow = await get_workflow_by_id(db, workflow_id, current_user.id)
+    if not workflow:
+        raise WorkflowNotFoundError(workflow_id)
+    if workflow.status not in ("completed", "cancelled", "failed"):
+        await cancel_workflow(db, workflow_id, current_user.id)
     await delete_workflow(db, workflow_id, current_user.id)
     return {"detail": "工作流已删除"}
 
@@ -150,7 +159,8 @@ async def human_decide(
         raise InvalidStateTransitionError(workflow_id, workflow.status, "decide")
 
     if decision.action == "approve":
-        event_logger = EventLogger(db, workflow.id, workflow.execution_attempt)
+        run = await db.get(WorkflowRun, workflow.current_run_id) if workflow.current_run_id else None
+        event_logger = EventLogger(db, workflow.id, workflow.execution_attempt, run_id=run.id if run else None)
         await event_logger.log(
             event_type=EventType.WORKFLOW_COMPLETE,
             payload={"approved_by_user": True},
@@ -162,12 +172,18 @@ async def human_decide(
         workflow.status = "completed"
         workflow.current_phase = "done"
         workflow.pause_state = None
+        workflow.completed_at = datetime.now(timezone.utc)
+        if run:
+            run.status = "completed"
+            run.completed_at = datetime.now(timezone.utc)
+        await _resolve_current_pauses(db, workflow.id, run.id if run else None, decision.model_dump(mode="json"))
         await db.commit()
         await sse_manager.close_workflow(workflow.id)
         return {"workflow_id": str(workflow.id), "status": "completed", "action": "approve"}
 
     if decision.action == "abort":
-        event_logger = EventLogger(db, workflow.id, workflow.execution_attempt)
+        run = await db.get(WorkflowRun, workflow.current_run_id) if workflow.current_run_id else None
+        event_logger = EventLogger(db, workflow.id, workflow.execution_attempt, run_id=run.id if run else None)
         await event_logger.log(
             event_type=EventType.WORKFLOW_FAILED,
             payload={"error_code": "USER_ABORTED", "error_message": "用户手动放弃"},
@@ -179,6 +195,10 @@ async def human_decide(
         })
         workflow.status = "cancelled"
         workflow.pause_state = None
+        if run:
+            run.status = "cancelled"
+            run.completed_at = datetime.now(timezone.utc)
+        await _resolve_current_pauses(db, workflow.id, run.id if run else None, decision.model_dump(mode="json"))
         await db.commit()
         await sse_manager.close_workflow(workflow.id)
         return {"workflow_id": str(workflow.id), "status": "cancelled", "action": "abort"}
@@ -191,3 +211,17 @@ async def human_decide(
         "action": decision.action.value,
         "target_node": decision.target_node,
     }
+
+
+async def _resolve_current_pauses(db: AsyncSession, workflow_id, run_id, decision_payload: dict) -> None:
+    stmt = select(WorkflowPause).where(
+        WorkflowPause.workflow_id == workflow_id,
+        WorkflowPause.is_resolved.is_(False),
+    )
+    if run_id is not None:
+        stmt = stmt.where(WorkflowPause.run_id == run_id)
+    result = await db.execute(stmt)
+    for pause in result.scalars().all():
+        pause.is_resolved = True
+        pause.decision = decision_payload
+        pause.resolved_at = datetime.now(timezone.utc)

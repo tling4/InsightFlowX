@@ -22,6 +22,7 @@ class Workflow(Base):
     revision_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     max_revisions: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
     total_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    current_run_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     langgraph_checkpoint_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     pause_state: Mapped[dict | None] = mapped_column(JSON, nullable=True)

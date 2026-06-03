@@ -1,9 +1,8 @@
 import time
-import uuid
 from app.agents.base_agent import BaseAgent
 from app.agents.agent_utils import llm_is_configured
 from app.agents.competitor_resolver import is_valid_competitor_name
-from app.services.event_service import EventLogger
+from app.core.runtime.context import AgentContext
 from app.schemas.event import EventType
 from app.schemas.review import ReviewOutput, ReviewCheck
 
@@ -38,19 +37,17 @@ class ReviewAgent(BaseAgent):
 
     node_name = "review"
 
-    async def run(self, state: dict, event_logger: EventLogger, workflow_id: uuid.UUID) -> dict:
-        await self.log_and_broadcast(event_logger, EventType.NODE_START, {
+    async def run(self, state: dict, ctx: AgentContext) -> dict:
+        await self.log_and_broadcast(ctx, EventType.NODE_START, {
             "input_summary": {"phase": "reviewing"},
-        }, workflow_id)
+        })
         await self.emit_progress(
-            event_logger,
-            workflow_id,
+            ctx,
             stage="check_source_coverage",
             message="正在检查目标产品与竞品的来源覆盖情况。",
         )
         await self.emit_progress(
-            event_logger,
-            workflow_id,
+            ctx,
             stage="check_structure",
             message="正在检查分析结构、报告完整性与结论一致性。",
         )
@@ -59,8 +56,7 @@ class ReviewAgent(BaseAgent):
 
         if llm_is_configured():
             await self.emit_progress(
-                event_logger,
-                workflow_id,
+                ctx,
                 stage="review_decision",
                 message="正在综合来源、分析结果与报告内容给出审查结论。",
             )
@@ -80,18 +76,17 @@ class ReviewAgent(BaseAgent):
                     "competitor_quality": self._competitor_quality_summary(state),
                 },
                 ReviewOutput,
-                event_logger, workflow_id, "report_review",
+                ctx, "report_review",
             )
             review = self._apply_hard_gates(review, state)
-            await self.log_and_broadcast(event_logger, EventType.LLM_RESPONSE, {
+            await self.log_and_broadcast(ctx, EventType.LLM_RESPONSE, {
                 "model_task": "report_review",
                 "score": review.score,
                 "passed": review.passed,
-            }, workflow_id)
+            })
         else:
             await self.emit_progress(
-                event_logger,
-                workflow_id,
+                ctx,
                 stage="rule_based_review",
                 message="未使用实时模型审查，当前将按规则检查报告质量与来源完整性。",
                 level="warning",
@@ -101,17 +96,16 @@ class ReviewAgent(BaseAgent):
         duration_ms = int((time.time() - start) * 1000)
 
         review_event = EventType.REVIEW_PASS if review.passed else EventType.REVIEW_FAIL
-        await self.log_and_broadcast(event_logger, review_event, {
+        await self.log_and_broadcast(ctx, review_event, {
             "score": review.score,
             "checks": [c.model_dump(mode="json") for c in review.checks],
             "feedback": review.feedback,
             "target_node": review.target_node,
             "specific_issues": review.specific_issues,
-        }, workflow_id)
+        })
         if review.passed:
             await self.emit_progress(
-                event_logger,
-                workflow_id,
+                ctx,
                 stage="review_passed",
                 message=f"审查通过，当前评分 {review.score}，报告可以进入完成态。",
                 level="success",
@@ -119,72 +113,49 @@ class ReviewAgent(BaseAgent):
         else:
             reroute_target = review.target_node or "analysis"
             await self.emit_progress(
-                event_logger,
-                workflow_id,
+                ctx,
                 stage="review_failed",
                 message=f"当前结果未通过审查，建议回退到 {reroute_target} 节点。原因：{review.feedback or '需要继续修订'}",
                 level="warning",
             )
 
-        await self.log_and_broadcast(event_logger, EventType.NODE_COMPLETE, {
+        await self.log_and_broadcast(ctx, EventType.NODE_COMPLETE, {
             "output_summary": {"passed": review.passed, "score": review.score},
             "duration_ms": duration_ms,
-        }, workflow_id)
+        })
 
         if not review.passed:
             revision_count = state.get("revision_count", 0)
             max_revisions = state.get("max_revisions", 3)
             if revision_count >= max_revisions:
                 await self.emit_progress(
-                    event_logger,
-                    workflow_id,
+                    ctx,
                     stage="review_max_revisions",
                     message=f"已达到最大修订次数 {max_revisions}，本轮将停止继续回退。",
                     level="warning",
                 )
-                await self.log_and_broadcast(event_logger, EventType.REVIEW_FAILED_MAX_REVISIONS, {
+                await self.log_and_broadcast(ctx, EventType.REVIEW_FAILED_MAX_REVISIONS, {
                     "revision_count": revision_count,
                     "max_revisions": max_revisions,
                     "score": review.score,
-                }, workflow_id)
+                })
                 return {
                     "review_result": review.model_dump(mode="json"),
-                    "review_reroute_target": None,
-                    "review_result_consumed": False,
                     "current_phase": "reviewing",
                 }
-            pause_reason = review.feedback or f"报告评分 {review.score}，未通过质检"
             await self.emit_progress(
-                event_logger,
-                workflow_id,
+                ctx,
                 stage="await_human_decision",
-                message=pause_reason,
+                message=review.feedback or f"报告评分 {review.score}，未通过质检",
                 level="warning",
             )
             return {
-                "__pause__": True,
-                "pause_reason": pause_reason,
-                "pause_options": [
-                    {"value": "jump", "label": "按建议重试", "target_node": review.target_node or "analysis"},
-                    {"value": "approve", "label": "强制通过（接受当前报告）"},
-                    {"value": "abort", "label": "放弃本次分析"},
-                ],
-                "pause_context": {
-                    "score": review.score,
-                    "checks": [c.model_dump(mode="json") for c in review.checks],
-                    "specific_issues": review.specific_issues,
-                    "target_node": review.target_node,
-                },
                 "review_result": review.model_dump(mode="json"),
-                "review_reroute_target": None,
-                "review_result_consumed": False,
                 "current_phase": "reviewing",
             }
 
         return {
             "review_result": review.model_dump(mode="json"),
-            "review_reroute_target": None,
-            "review_result_consumed": False,
             "current_phase": "reviewing",
         }
 

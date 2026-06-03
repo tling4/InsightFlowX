@@ -14,6 +14,7 @@ class EventLogger:
         db: AsyncSession,
         workflow_id: uuid.UUID,
         execution_attempt: int,
+        run_id: uuid.UUID | None = None,
         node_name: str = "",
         iteration: int = 0,
         seq_state: dict[str, int | None] | None = None,
@@ -22,6 +23,7 @@ class EventLogger:
         self.db = db
         self.workflow_id = workflow_id
         self.execution_attempt = execution_attempt
+        self.run_id = run_id
         self.node_name = node_name
         self.iteration = iteration
         self._seq_state = seq_state if seq_state is not None else {"value": None}
@@ -49,6 +51,7 @@ class EventLogger:
             event = WorkflowEvent(
                 id=uuid.uuid4(),
                 workflow_id=self.workflow_id,
+                run_id=self.run_id,
                 node_name=node_name or self.node_name,
                 iteration=iteration if iteration is not None else self.iteration,
                 event_type=event_type.value,
@@ -65,6 +68,7 @@ class EventLogger:
             db=self.db,
             workflow_id=self.workflow_id,
             execution_attempt=self.execution_attempt,
+            run_id=self.run_id,
             node_name=node_name,
             iteration=iteration,
             seq_state=self._seq_state,

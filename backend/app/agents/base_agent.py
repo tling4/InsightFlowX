@@ -1,11 +1,9 @@
-import uuid
 from typing import Any, TypeVar
 
 from pydantic import BaseModel
 
 from app.agents.agent_utils import invoke_json_model
-from app.services.event_service import EventLogger
-from app.services.sse_service import sse_manager
+from app.core.runtime.context import AgentContext
 from app.schemas.event import EventType
 
 T = TypeVar("T", bound=BaseModel)
@@ -24,59 +22,28 @@ class BaseAgent:
 
     # ── 事件 / SSE ──────────────────────────────────────────────
 
-    async def log_and_broadcast(
-        self,
-        event_logger: EventLogger,
-        event_type: EventType,
-        payload: dict,
-        workflow_id: uuid.UUID,
-    ) -> None:
-        """双写：持久化到数据库 + 广播 SSE。
-
-        持久化保证历史复盘有据可查，SSE 保证前端实时看到节点进度。
-        两者写入同一个 payload，避免信息不一致。
-        """
-        event = await event_logger.log(event_type=event_type, payload=payload)
-        await sse_manager.broadcast(workflow_id, {
-            "event_type": event_type.value,
-            "node_name": event.node_name,
-            "seq": event.seq,
-            "payload": payload,
-            "created_at": str(event.created_at),
-        })
+    async def log_and_broadcast(self, ctx: AgentContext, event_type: EventType, payload: dict) -> None:
+        """Emit a semantic event through the runtime-owned event sink."""
+        await ctx.events.emit(event_type, payload)
 
     async def emit_progress(
         self,
-        event_logger: EventLogger,
-        workflow_id: uuid.UUID,
+        ctx: AgentContext,
         *,
         stage: str,
         message: str,
         level: str = "info",
     ) -> None:
         """发送用户可见的节点过程说明，不暴露模型原始 token。"""
-        await self.log_and_broadcast(
-            event_logger,
-            EventType.NODE_PROGRESS,
-            {
-                "stage": stage,
-                "message": message,
-                "level": level,
-            },
-            workflow_id,
-        )
+        await ctx.events.progress(stage=stage, message=message, level=level)
 
-    async def stream_llm_token(self, workflow_id: uuid.UUID, token: str) -> None:
+    async def stream_llm_token(self, ctx: AgentContext, token: str) -> None:
         """向 SSE 订阅者广播 LLM 流式输出的单个 token 块。
 
         与 log_and_broadcast 不同，这里不写数据库 — token 粒度太细，
         写入会产生大量 IO。前端通过 event_type="llm_stream" 区分。
         """
-        await sse_manager.broadcast(workflow_id, {
-            "event_type": "llm_stream",
-            "node_name": self.node_name,
-            "content": token,
-        })
+        await ctx.events.stream_token(token)
 
     # ── LLM 调用 ────────────────────────────────────────────────
 
@@ -85,8 +52,7 @@ class BaseAgent:
         system_prompt: str,
         user_payload: dict[str, Any],
         schema: type[T],
-        event_logger: EventLogger,
-        workflow_id: uuid.UUID,
+        ctx: AgentContext,
         task_name: str,
         *,
         request_meta: dict[str, Any] | None = None,
@@ -103,9 +69,9 @@ class BaseAgent:
         payload: dict[str, Any] = {"model_task": task_name}
         if request_meta:
             payload.update(request_meta)
-        await self.log_and_broadcast(event_logger, EventType.LLM_REQUEST, payload, workflow_id)
+        await self.log_and_broadcast(ctx, EventType.LLM_REQUEST, payload)
 
         async def _on_token(token: str) -> None:
-            await self.stream_llm_token(workflow_id, token)
+            await self.stream_llm_token(ctx, token)
 
         return await invoke_json_model(system_prompt, user_payload, schema, stream_callback=_on_token)

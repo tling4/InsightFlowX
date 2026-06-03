@@ -1,5 +1,94 @@
 # Changelog
 
+## 2026-06-03
+
+### 19. 多 Agent 编排层重构 —— 统一 runtime 抽象与 pause/reroute 机制
+
+本次重构将分散在 `core/` 各处的 agent 编排逻辑收拢为统一的 `core/runtime/` 可复用层，并消除了 review 节点特有的硬编码，使所有节点平等支持暂停（pause）和回跳（reroute）。
+
+#### 重构动机
+
+原有架构存在三个结构性问题：
+
+- **执行层与模板层混杂**：`graph_nodes.py`（旧式闭包图构建）、`orchestrator.py`（门面）、`node_executor.py`（重试逻辑）各自为政，无清晰边界
+- **pause/reroute 名义统一但实现不统一**：`template.py` 中每个 `NodeSpec` 都有 `pause_policy` / `route_policy` / `allowed_routes`，但 `graph_runtime.py` 的 gate node 硬编码了 `if spec.id == "review"`，只有 review 节点 reroute 时会递增 `revision_count` 并发出 `REROUTE` 事件
+- **workflow_executor.py 职责过重**：pause 生命周期管理（提取、持久化、解析）散落在 400+ 行文件中，与竞品分析专用逻辑（`_review_failed`、`_review_failure_message`、`_initial_data`）杂糅
+
+#### 重构方案
+
+**A. 新增 `core/runtime/` —— 可复用的 StateGraph 执行引擎**
+
+将六层抽象集中管理：
+
+| 文件 | 职责 |
+|---|---|
+| `template.py` | 声明式接口：`GraphTemplate`、`NodeSpec`、`AgentLike`/`RoutePolicy`/`PausePolicy` 协议、`ControlDecision`/`PauseRequest` 等数据载体 |
+| `context.py` | Agent 运行时上下文：`AgentContext`（注入 agent 调用）、`EventSink`（事件双写 + SSE） |
+| `retry.py` | 重试机制：`NodeFatalError`（含统一 `error_info` 属性提取）、`execute_with_retry`（指数退避） |
+| `node_runner.py` | 单节点执行器：构造 AgentContext → 调用 agent.run（含重试）→ 合并 patch → 保存制品与状态快照 |
+| `graph_runtime.py` | StateGraph 编译与执行：每个 NodeSpec → 业务节点 + 控制门节点 → 条件路由 |
+| `policies.py` | 具体策略实现：`DefaultRoutePolicy`、`ReviewFailPausePolicy`、`ReviewRoutePolicy` |
+
+**B. 文件迁移与删除**
+
+- `core/node_executor.py` → 合并到 `runtime/retry.py`（`NodeFatalError` + `execute_with_retry`）
+- `core/graph_nodes.py` → 删除（已无引用，原逻辑由 `NodeRunner` + gate node 替代）
+- `core/orchestrator.py` → 删除（门面文件，仅重导出 `CompetitiveAnalysisTemplate`，无实际调用方）
+- `core/pause_service.py` → **新建**，从 `workflow_executor.py` 提取 pause 生命周期四函数：`extract_interrupt_payload` / `make_pause_state` / `persist_pause` / `resolve_pause`
+
+**C. workflow_executor.py 精简化**
+
+- 删除已迁移到 `pause_service.py` 的四个 pause 函数
+- 删除竞品分析专用的 `_review_failed` / `_review_failure_message` 兜底检查，只信任 gate node 设置的 `control["terminal_status"]`（单点真相）
+- 删除不再使用的 `_state_data` 辅助函数
+- 从 400+ 行缩减到 ~300 行，职责收敛为工作流生命周期编排（run / resume / recover）
+
+**D. 统一 reroute 机制**
+
+- `graph_runtime.py` gate node 移除 `if spec.id == "review"` 硬编码 —— 任何节点通过 `RoutePolicy` 返回 `action="route"` 时都会递增 `revision_count` 并发出 `REROUTE` 事件
+- 所有四个 DAG 节点都已配置 `allowed_routes=REROUTE_TARGETS`，架构上所有节点均平等支持回跳
+
+**E. 错误信息提取统一化**
+
+`NodeFatalError` 新增 `error_code` / `error_message` / `error_details` / `error_info` 四个 property，将 `AppException` 解包逻辑内聚到异常类自身。消除 `node_runner.py` 和 `workflow_executor.py` 中两处重复的 `isinstance` 解包。
+
+**F. 全面补充文档注释**
+
+`core/` 下全部 12 个文件补充详尽的模块级、类级和方法级中文注释，覆盖：
+- 各层职责边界和使用场景
+- 协议方法的参数/返回值约定
+- 控制流语义（`ControlDecision` 五种 action、gate node 执行四步顺序）
+- 生命周期说明（pause 四阶段、checkpointer init→get→shutdown、workflow run→resume→recover）
+
+#### 变更文件
+
+- `backend/app/core/runtime/__init__.py` — 公共 API 一览注释 + 新增 `NodeFatalError` / `execute_with_retry` 导出
+- `backend/app/core/runtime/template.py` — 完整层次图注释
+- `backend/app/core/runtime/context.py` — `EventSink` / `AgentContext` 详尽注释
+- `backend/app/core/runtime/retry.py` — **新建**，替代 `node_executor.py`；`NodeFatalError` 新增统一 error_info 属性
+- `backend/app/core/runtime/node_runner.py` — 执行流程文档 + 移除 `AppException` 冗余导入
+- `backend/app/core/runtime/graph_runtime.py` — gate node 注释 + **移除 `if spec.id == "review"` 硬编码**
+- `backend/app/core/runtime/policies.py` — 三个策略类的决策逻辑注释
+- `backend/app/core/pause_service.py` — **新建**，暂停生命周期四函数 + 详尽文档
+- `backend/app/core/competitive_template.py` — 新增 `make_initial_data`；新增图拓扑 ASCII 注释；**删除** `review_failed` / `review_failure_message`
+- `backend/app/core/workflow_executor.py` — 删除 pause 四函数、领域检查、`_state_data`；替换调用点为 `pause_service` 导入；补充完整流程文档
+- `backend/app/core/checkpointer.py` — 生命周期说明注释
+- `backend/app/core/node_executor.py` — **删除**
+- `backend/app/core/graph_nodes.py` — **删除**
+- `backend/app/core/orchestrator.py` — **删除**
+- `backend/tests/test_workflow_executor.py` — 导入路径更新；删除 `review_failed`/`review_failure_message` 测试
+- `backend/tests/test_human_in_the_loop.py` — 导入路径从 `node_executor` → `runtime.retry`
+
+#### 验证
+
+- `cd backend && conda run -n insightflow python -m pytest tests/test_workflow_executor.py tests/test_human_in_the_loop.py tests/test_runtime_template.py tests/test_node_progress.py tests/test_report_agent.py -v` — 60 passed, 0 failed
+
+#### 可能的潜在问题
+
+- **gate node 对所有节点都递增 revision_count**：当前只有 review 节点配置了可触发 reroute 的策略，其他节点使用 `DefaultRoutePolicy`（永远走 `default_next`）。若未来为其他节点添加会触发 reroute 的策略，revision_count 语义可能需要重新审视（当前意为"质检回跳次数"）
+- **pause_service 依赖 `WorkflowPause` ORM 模型**：虽然接口通用（接受 `workflow` / `run` duck-typed 对象），但内部直接引用 `WorkflowPause` 表结构。若日后切换到其他 pause 存储后端，需要替换 `persist_pause` / `resolve_pause` 两个函数
+- **`competitive_template.py` 的 `REROUTE_TARGETS` 写死四个节点 id**：新节点加入时需要同步更新此元组，否则 review 无法回跳到新增节点。可考虑改为从模板 node_ids 动态生成，但当前只有四个节点的场景下静态声明更安全（防止意外回跳到不存在的节点）
+
 ## 2026-06-02
 
 ### 15. 结构化输出、重试语义与僵尸工作流修复

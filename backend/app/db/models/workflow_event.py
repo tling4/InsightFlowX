@@ -15,6 +15,7 @@ class WorkflowEvent(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     workflow_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("workflow.id", ondelete="CASCADE"), nullable=False)
+    run_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("workflow_run.id", ondelete="CASCADE"), nullable=True)
     node_name: Mapped[str] = mapped_column(String(64), nullable=False)
     iteration: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     event_type: Mapped[str] = mapped_column(String(32), nullable=False)

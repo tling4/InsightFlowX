@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends
+import uuid
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.session import get_async_session
 from app.dependencies import get_current_user
@@ -15,12 +16,13 @@ async def list_trace_links(
     current_user=Depends(get_current_user),
     db: AsyncSession = Depends(get_async_session),
     execution_attempt: int | None = None,
+    run_id: uuid.UUID | None = None,
 ):
     """获取工作流的溯源链接列表。"""
     workflow = await get_workflow_by_id(db, workflow_id, current_user.id)
     if not workflow:
         raise WorkflowNotFoundError(workflow_id)
-    artifact_ids = await get_artifact_ids_by_workflow(db, workflow.id, execution_attempt)
+    artifact_ids = await get_artifact_ids_by_workflow(db, workflow.id, execution_attempt, run_id)
     if not artifact_ids:
         return []
     links = await get_trace_links(db, artifact_ids)

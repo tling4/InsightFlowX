@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, Query
+import uuid
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.session import get_async_session
@@ -17,6 +18,7 @@ async def list_events(
     node_name: str | None = Query(None),
     event_type: str | None = Query(None),
     execution_attempt: int | None = Query(None, ge=1),
+    run_id: uuid.UUID | None = Query(None),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     current_user=Depends(get_current_user),
@@ -26,8 +28,8 @@ async def list_events(
     workflow = await get_workflow_by_id(db, workflow_id, current_user.id)
     if not workflow:
         raise WorkflowNotFoundError(workflow_id)
-    events = await get_events(db, workflow.id, node_name, event_type, execution_attempt, limit, offset)
-    total = await count_events(db, workflow.id, node_name, event_type, execution_attempt)
+    events = await get_events(db, workflow.id, node_name, event_type, execution_attempt, run_id, limit, offset)
+    total = await count_events(db, workflow.id, node_name, event_type, execution_attempt, run_id)
     return {
         "items": [
             {
@@ -36,6 +38,7 @@ async def list_events(
                 "iteration": e.iteration,
                 "event_type": e.event_type,
                 "seq": e.seq,
+                "run_id": str(e.run_id) if e.run_id else None,
                 "payload": e.payload,
                 "created_at": e.created_at,
             }
@@ -68,6 +71,7 @@ async def sse_stream(
 async def list_node_states(
     workflow_id: str,
     execution_attempt: int | None = Query(None, ge=1),
+    run_id: uuid.UUID | None = Query(None),
     current_user=Depends(get_current_user),
     db: AsyncSession = Depends(get_async_session),
 ):
@@ -75,12 +79,13 @@ async def list_node_states(
     workflow = await get_workflow_by_id(db, workflow_id, current_user.id)
     if not workflow:
         raise WorkflowNotFoundError(workflow_id)
-    states = await get_node_states(db, workflow.id, execution_attempt)
+    states = await get_node_states(db, workflow.id, execution_attempt, run_id)
     return [
         {
             "id": str(s.id),
             "node_name": s.node_name,
             "iteration": s.iteration,
+            "run_id": str(s.run_id) if s.run_id else None,
             "is_error": s.is_error,
             "duration_ms": s.duration_ms,
             "tokens_input": s.tokens_input,

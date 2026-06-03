@@ -1,9 +1,11 @@
 import uuid
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from app.agents.report_agent import ReportAgent, ReportDraft
+from app.core.runtime.context import AgentContext
 from app.schemas.report import ReportSection
 
 
@@ -23,12 +25,25 @@ def _make_draft() -> ReportDraft:
     )
 
 
+def _mock_ctx() -> AgentContext:
+    return AgentContext(
+        workflow_id=uuid.uuid4(),
+        run_id=uuid.uuid4(),
+        node_id="report_writing",
+        iteration=0,
+        events=SimpleNamespace(
+            emit=AsyncMock(),
+            progress=AsyncMock(),
+            stream_token=AsyncMock(),
+        ),
+    )
+
+
 class TestReportAgent:
     @pytest.mark.asyncio
     async def test_partial_source_coverage_still_uses_llm(self):
         agent = ReportAgent()
-        event_logger = AsyncMock()
-        event_logger.log = AsyncMock()
+        ctx = _mock_ctx()
         agent.log_and_broadcast = AsyncMock()
         agent.invoke_llm = AsyncMock(return_value=_make_draft())
 
@@ -48,7 +63,7 @@ class TestReportAgent:
         }
 
         with patch("app.agents.report_agent.llm_is_configured", return_value=True):
-            result = await agent.run(state, event_logger, uuid.uuid4())
+            result = await agent.run(state, ctx)
 
         agent.invoke_llm.assert_awaited_once()
         payload = agent.invoke_llm.call_args.args[1]
@@ -60,8 +75,7 @@ class TestReportAgent:
     @pytest.mark.asyncio
     async def test_competitor_resolution_error_stays_insufficient(self):
         agent = ReportAgent()
-        event_logger = AsyncMock()
-        event_logger.log = AsyncMock()
+        ctx = _mock_ctx()
         agent.log_and_broadcast = AsyncMock()
         agent.invoke_llm = AsyncMock(return_value=_make_draft())
 
@@ -76,7 +90,7 @@ class TestReportAgent:
         }
 
         with patch("app.agents.report_agent.llm_is_configured", return_value=True):
-            result = await agent.run(state, event_logger, uuid.uuid4())
+            result = await agent.run(state, ctx)
 
         agent.invoke_llm.assert_not_called()
         assert "资料不足" in result["report"]["title"]

@@ -1,5 +1,20 @@
+"""LangGraph Postgres 检查点管理。
+
+通过 AsyncPostgresSaver 将 StateGraph 的执行状态持久化到 PostgreSQL，
+支持工作流的中断恢复（resume）和僵尸恢复（recover）。
+
+生命周期：
+    app 启动时调用 init_checkpointer()   → 建立连接 + setup 表结构
+    app 关闭时调用 shutdown_checkpointer() → 关闭连接
+    运行时调用 get_checkpointer()         → 返回已初始化的 saver 实例
+
+使用方式：
+    checkpointer = await get_checkpointer()
+    runtime = GraphRuntime(..., checkpointer=checkpointer)
+"""
+
 import logging
-import psycopg
+from typing import Any
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.checkpoint.postgres import dict_row
 from app.config import get_settings
@@ -7,11 +22,23 @@ from app.config import get_settings
 logger = logging.getLogger(__name__)
 
 _saver: AsyncPostgresSaver | None = None
-_conn: psycopg.AsyncConnection | None = None
+_conn: Any | None = None
 
 
 async def init_checkpointer() -> None:
+    """初始化 Postgres 检查点保存器。
+
+    使用 psycopg 异步连接 + dict_row 行工厂，
+    调用 saver.setup() 自动创建 langgraph checkpoint 所需的表。
+
+    Raises:
+        RuntimeError: 如果未安装 psycopg
+    """
     global _saver, _conn
+    try:
+        import psycopg
+    except ModuleNotFoundError as exc:
+        raise RuntimeError("psycopg is required to initialize the Postgres checkpointer") from exc
     settings = get_settings()
     _conn = await psycopg.AsyncConnection.connect(
         settings.DATABASE_URL_SYNC,
@@ -25,12 +52,24 @@ async def init_checkpointer() -> None:
 
 
 async def get_checkpointer() -> AsyncPostgresSaver:
+    """获取已初始化的检查点保存器实例。
+
+    Returns:
+        全局 AsyncPostgresSaver 实例
+
+    Raises:
+        RuntimeError: 如果 checkpointer 尚未初始化
+    """
     if _saver is None:
         raise RuntimeError("Checkpointer not initialized")
     return _saver
 
 
 async def shutdown_checkpointer() -> None:
+    """关闭检查点数据库连接。
+
+    应在 app 关闭时调用，释放 psycopg 连接资源。
+    """
     global _saver, _conn
     if _conn is not None:
         await _conn.close()

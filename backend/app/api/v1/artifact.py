@@ -27,16 +27,18 @@ async def list_artifacts(
     current_user=Depends(get_current_user),
     db: AsyncSession = Depends(get_async_session),
     execution_attempt: int | None = None,
+    run_id: _uuid.UUID | None = None,
 ):
     """获取工作流产物列表。"""
     workflow = await get_workflow_by_id(db, workflow_id, current_user.id)
     if not workflow:
         raise WorkflowNotFoundError(workflow_id)
-    artifacts = await get_workflow_artifacts(db, workflow.id, execution_attempt)
+    artifacts = await get_workflow_artifacts(db, workflow.id, execution_attempt, run_id)
     return [
         {
             "id": str(a.id),
             "artifact_type": a.artifact_type,
+            "run_id": str(a.run_id) if a.run_id else None,
             "title": a.title,
             "created_by_node": a.created_by_node,
             "format_version": a.format_version,
@@ -62,6 +64,7 @@ async def get_artifact_detail(
     return {
         "id": str(artifact.id),
         "artifact_type": artifact.artifact_type,
+        "run_id": str(artifact.run_id) if artifact.run_id else None,
         "title": artifact.title,
         "content": artifact.content,
         "content_text": artifact.content_text,

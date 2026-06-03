@@ -1,8 +1,7 @@
 import time
-import uuid
 from app.agents.base_agent import BaseAgent
 from app.agents.agent_utils import llm_is_configured, raw_data_to_context
-from app.services.event_service import EventLogger
+from app.core.runtime.context import AgentContext
 from app.schemas.event import EventType
 from app.schemas.feature import FeatureMatrix
 from app.schemas.pricing import PricingComparison
@@ -47,7 +46,7 @@ JSON schema:
 class AnalysisAgent(BaseAgent):
     node_name = "analysis"
 
-    async def run(self, state: dict, event_logger: EventLogger, workflow_id: uuid.UUID) -> dict:
+    async def run(self, state: dict, ctx: AgentContext) -> dict:
         """将采集阶段产出的原始搜索结果转为结构化竞品分析。
 
         LLM 可用时：调用 invoke_llm（流式 + 结构化解码），一次返回四大分析产物。
@@ -69,17 +68,16 @@ class AnalysisAgent(BaseAgent):
         else:
             products = [p for p in [target, *competitors] if p]
 
-        await self.log_and_broadcast(event_logger, EventType.NODE_START, {
+        await self.log_and_broadcast(ctx, EventType.NODE_START, {
             "input_summary": {
                 "phase": "analyzing",
                 "target_product": target,
                 "products_count": len(products),
                 "source_count": sum(len(items) for items in raw_data.values()) if isinstance(raw_data, dict) else 0,
             },
-        }, workflow_id)
+        })
         await self.emit_progress(
-            event_logger,
-            workflow_id,
+            ctx,
             stage="prepare_context",
             message="正在整理采集来源并建立比较上下文，为后续分析准备统一基线。",
         )
@@ -88,8 +86,7 @@ class AnalysisAgent(BaseAgent):
 
         if llm_is_configured() and raw_data:
             await self.emit_progress(
-                event_logger,
-                workflow_id,
+                ctx,
                 stage="run_analysis",
                 message="正在比较功能维度、整理定价信息、归纳用户反馈并生成 SWOT 结论。",
             )
@@ -104,14 +101,14 @@ class AnalysisAgent(BaseAgent):
                     "sources_by_product": raw_data_to_context(raw_data),
                 },
                 AnalysisBundle,
-                event_logger, workflow_id, "competitive_analysis",
+                ctx, "competitive_analysis",
                 request_meta={"products": products},
             )
             # LLM_RESPONSE 仍由 agent 自行记录，携带分析特有的摘要字段
-            await self.log_and_broadcast(event_logger, EventType.LLM_RESPONSE, {
+            await self.log_and_broadcast(ctx, EventType.LLM_RESPONSE, {
                 "model_task": "competitive_analysis",
                 "feature_items": len(bundle.feature_matrix.matrix),
-            }, workflow_id)
+            })
             feature_matrix = bundle.feature_matrix
             pricing_comparison = bundle.pricing_comparison
             user_sentiment = bundle.user_sentiment
@@ -123,37 +120,32 @@ class AnalysisAgent(BaseAgent):
                 products,
             )
             await self.emit_progress(
-                event_logger,
-                workflow_id,
+                ctx,
                 stage="feature_matrix_ready",
                 message=f"功能对比已完成，当前覆盖 {len(feature_matrix.dimensions)} 个分析维度。",
                 level="success",
             )
             await self.emit_progress(
-                event_logger,
-                workflow_id,
+                ctx,
                 stage="pricing_ready",
                 message=f"定价信息已整理完成，当前输出 {len(pricing_comparison.plans)} 组产品方案。",
                 level="success",
             )
             await self.emit_progress(
-                event_logger,
-                workflow_id,
+                ctx,
                 stage="sentiment_ready",
                 message=f"用户反馈归纳完成，当前覆盖 {len(user_sentiment.per_product)} 个产品。",
                 level="success",
             )
             await self.emit_progress(
-                event_logger,
-                workflow_id,
+                ctx,
                 stage="swot_ready",
                 message="SWOT 结论已生成，正在汇总结构化分析结果。",
                 level="success",
             )
         else:
             await self.emit_progress(
-                event_logger,
-                workflow_id,
+                ctx,
                 stage="fallback_analysis",
                 message="未使用实时模型分析，当前将根据现有来源生成规则化分析草稿。",
                 level="warning",
@@ -164,21 +156,20 @@ class AnalysisAgent(BaseAgent):
 
         duration_ms = int((time.time() - start) * 1000)
         await self.emit_progress(
-            event_logger,
-            workflow_id,
+            ctx,
             stage="analysis_complete",
             message="结构化分析已完成，结果可用于生成竞品分析报告。",
             level="success",
         )
 
-        await self.log_and_broadcast(event_logger, EventType.NODE_COMPLETE, {
+        await self.log_and_broadcast(ctx, EventType.NODE_COMPLETE, {
             "output_summary": {
                 "dimensions_count": len(feature_matrix.dimensions),
                 "feature_items": len(feature_matrix.matrix),
                 "pricing_plans": len(pricing_comparison.plans),
             },
             "duration_ms": duration_ms,
-        }, workflow_id)
+        })
 
         return {
             "feature_matrix": feature_matrix.model_dump(mode="json"),

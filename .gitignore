@@ -14,12 +14,6 @@
 /.claude
 CLAUDE.md
 
-# personal 
-notice.md
-CLAUDE.md
-AGENTS.md
-ISSUES.md
-
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

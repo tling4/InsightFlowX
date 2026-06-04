@@ -98,13 +98,22 @@ async def stream_interview_response(
     workflow_id: uuid.UUID,
     user_message: str
 ) -> AsyncGenerator[str, None]:
-    """处理用户消息 → 保存 → 请求 LLM → 流式返回 → 自动提取配置。
+    """处理用户消息 → 保存 → 请求 LLM → 积攒 → 提取配置 → 清洗 → 回放 → META。
 
-    流结束后附加 ---META--- 分隔行 + JSON，包含：
+    流程说明：
+    - Phase A: 积攒 LLM 全部输出，不立即 yield（避免前端看到原始 WorkflowConfig JSON）
+    - Phase B: 从原始文本提取配置，补全 product_profile / competitors
+    - Phase C: 剥离 JSON 代码块，只保留对话文本
+    - Phase D: 持久化清洗后的消息
+    - Phase E: 以小块回放清洗文本（模拟流式效果）
+    - Phase F: 推送 ---META--- 分隔行 + 最终配置 JSON
+
+    META 包含：
       - is_complete: 是否已完成访谈
-      - extracted_config: 从 LLM 响应中析取的竞品分析配置
-      - suggested_competitors: 搜索推荐的竞品列表
+      - extracted_config: 经 suggest_competitors 处理后的最终配置
+      - suggested_competitors: 与 extracted_config.competitors 一致
     """
+    # -- Phase A: 积攒 -------------------------------------------------------
     await save_message(db, workflow_id, "user", user_message)
     history = await get_message_history(db, workflow_id)
     lc_messages = convert_to_langchain_messages(history)
@@ -112,10 +121,9 @@ async def stream_interview_response(
     full_response = ""
     async for chunk in _get_interview_agent().stream_response(lc_messages):
         full_response += chunk
-        yield chunk
+        # 不立即 yield —— 等 suggest_competitors 完成后再推送
 
-    await save_message(db, workflow_id, "assistant", full_response)
-
+    # -- Phase B: 提取 & 补全 config ----------------------------------------
     config = _get_interview_agent().try_extract_config(full_response)
     is_complete = _get_interview_agent().is_complete_signal(full_response)
 
@@ -140,6 +148,20 @@ async def stream_interview_response(
             workflow.config = config.model_dump()
             await db.commit()
 
+    # -- Phase C: 清洗 -------------------------------------------------------
+    # 取第一个 ``` 之前的文本作为聊天内容（丢弃 JSON 代码块和 ---CONFIG_COMPLETE---）
+    cleaned_response = full_response.split("```", 1)[0].strip()
+
+    # -- Phase D: 持久化清洗后的消息 ------------------------------------------
+    await save_message(db, workflow_id, "assistant", cleaned_response)
+
+    # -- Phase E: 回放 -------------------------------------------------------
+    # 以 3 字符为粒度 yield，视觉上仍有打字效果
+    chunk_len = 3
+    for i in range(0, len(cleaned_response), chunk_len):
+        yield cleaned_response[i:i + chunk_len]
+
+    # -- Phase F: META --------------------------------------------------------
     yield "\n---META---\n"
     meta = {
         "is_complete": is_complete,

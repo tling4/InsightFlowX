@@ -89,6 +89,33 @@
 - **pause_service 依赖 `WorkflowPause` ORM 模型**：虽然接口通用（接受 `workflow` / `run` duck-typed 对象），但内部直接引用 `WorkflowPause` 表结构。若日后切换到其他 pause 存储后端，需要替换 `persist_pause` / `resolve_pause` 两个函数
 - **`competitive_template.py` 的 `REROUTE_TARGETS` 写死四个节点 id**：新节点加入时需要同步更新此元组，否则 review 无法回跳到新增节点。可考虑改为从模板 node_ids 动态生成，但当前只有四个节点的场景下静态声明更安全（防止意外回跳到不存在的节点）
 
+<<<<<<< HEAD
+=======
+### 20. 修复 Interview SSE 中 competitors 不一致 & 原始 WorkflowConfig JSON 泄露
+
+Interview 阶段 LLM 的原始 WorkflowConfig JSON（含 LLM 自行判断的 `competitors`）通过 SSE 流式推送到前端聊天面板立即可见，随后 `suggest_competitors()` 会覆盖 `config.competitors` 再通过 `---META---` 推给右侧面板。这导致两个问题：(1) 聊天面板里的竞品列表 ≠ 右侧面板的竞品列表；(2) 用户看到机器可读的结构化 JSON 文本，体验差。
+
+#### 修复方案
+
+**Buffer → 处理 → 清洗 → 回放**：将 `stream_interview_response` 从"LLM token 立即 yield"改为"积攒后统一处理"。
+
+- **Phase A — 积攒**：遍历 LLM stream 全部 append 到 `full_response`，不立即 yield
+- **Phase B — 提取 & 补全**：用原始 `full_response` 提取 WorkflowConfig，跑 `build_product_profile` + `suggest_competitors` 覆盖 `competitors`（逻辑不变）
+- **Phase C — 清洗**：`full_response.split('```', 1)[0].strip()` — 取第一个代码围栏之前的纯对话文本，丢弃 JSON 块和 `---CONFIG_COMPLETE---` 哨兵
+- **Phase D — 持久化**：`save_message` 改为存清洗后的 `cleaned_response`，用户刷新后也不会看到 JSON
+- **Phase E — 回放**：以 3 字符为粒度 yield `cleaned_response`，视觉上仍有打字效果
+- **Phase F — META**：yield `---META---` + 最终 config JSON（经 suggest_competitors 处理后的最终值）
+
+**System prompt 微调**：告知 LLM JSON 代码块用于系统自动提取，不会展示给用户。即使 LLM 忽略，Phase C 的 `split` 清洗也会兜底。
+
+前端无需任何改动——SSE 格式（`data: {chunk}\n\n`）、`---META---` 分隔符、回放粒度均兼容现有解析逻辑。
+
+#### 修改的文件
+
+- `backend/app/services/interview_service.py` — 重构 `stream_interview_response`：积攒 → 处理 → 清洗 → 持久化 → 回放 → META
+- `backend/app/agents/interview_agent.py` — System prompt 新增一行：JSON 用于系统自动提取，不展示给用户
+
+>>>>>>> feat/langsmith-tracing
 ## 2026-06-02
 
 ### 15. 结构化输出、重试语义与僵尸工作流修复

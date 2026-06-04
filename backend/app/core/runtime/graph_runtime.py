@@ -82,8 +82,16 @@ class GraphRuntime:
 
     @property
     def config(self) -> dict:
-        """langgraph 配置字典，包含 thread_id 用于 checkpoint 隔离。"""
-        return {"configurable": {"thread_id": self.thread_id}}
+        """langgraph 配置字典，包含 thread_id 和 workflow 元数据。"""
+        return {
+            "configurable": {"thread_id": self.thread_id},
+            "metadata": {
+                "workflow_id": str(self.workflow_id),
+                "run_id": str(self.run_id),
+                "template": self.template.name,
+                "execution_attempt": self.execution_attempt,
+            },
+        }
 
     def initial_state(self, data: dict) -> RuntimeState:
         """构造 RuntimeState 初始值。

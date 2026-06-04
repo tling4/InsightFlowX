@@ -19,6 +19,12 @@ from datetime import datetime, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.runtime.retry import NodeFatalError, execute_with_retry
+
+try:
+    from langsmith import traceable
+except ImportError:
+    def traceable(**kwargs):  # type: ignore[no-redef]
+        return lambda fn: fn
 from app.core.runtime.context import AgentContext, EventSink
 from app.core.runtime.template import ArtifactDraft, NodeResult, NodeSpec
 from app.db.models.artifact import Artifact
@@ -76,6 +82,7 @@ class NodeRunner:
         self.execution_attempt = execution_attempt
         self.event_logger = event_logger
 
+    @traceable(run_type="chain", name="node_execution")
     async def run(self, spec: NodeSpec, state: dict) -> dict:
         """执行单个 NodeSpec。
 

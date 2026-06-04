@@ -21,6 +21,7 @@ dependencies = [
     "langgraph-checkpoint-postgres>=3.0.0",
     "langchain>=0.3.19",
     "langchain-openai>=0.2.8",
+    "langsmith>=0.1.0",
     "tavily-python>=0.5.1",
 ]
 

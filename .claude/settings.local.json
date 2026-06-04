@@ -37,7 +37,9 @@
       "Bash(./node_modules/.bin/tsc --noEmit)",
       "Bash(echo \"exit=$?\")",
       "Bash(./node_modules/.bin/next lint *)",
-      "Bash(grep -A 2 \"page\\\\.tsx$\")"
+      "Bash(grep -A 2 \"page\\\\.tsx$\")",
+      "Bash(\"E:/env/miniconda3/envs/insightflow/python.exe\" _verify_langsmith.py)",
+      "Bash(\"E:/env/miniconda3/envs/insightflow/python.exe\" -m pytest -x -q)"
     ]
   }
 }

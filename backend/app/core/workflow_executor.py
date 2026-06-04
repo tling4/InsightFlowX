@@ -27,7 +27,7 @@ from langgraph.errors import GraphInterrupt
 from sqlalchemy import select, func as sa_func
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
-from app.core.checkpointer import get_checkpointer
+from app.core.dependency.checkpointer import get_checkpointer
 from app.core.competitive_template import CompetitiveAnalysisTemplate, make_initial_data
 from app.core.pause_service import extract_interrupt_payload, make_pause_state, persist_pause, resolve_pause
 from app.core.runtime.retry import NodeFatalError

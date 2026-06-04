@@ -7,6 +7,12 @@ from pydantic import BaseModel
 
 from app.config import get_settings
 
+try:
+    from langsmith import traceable
+except ImportError:  # langsmith 未安装时不报错
+    def traceable(**kwargs):  # type: ignore[no-redef]
+        return lambda fn: fn
+
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -113,6 +119,7 @@ def _schema_repair_prompt(
     ]
 
 
+@traceable(run_type="llm", name="invoke_structured_json")
 async def invoke_json_model(
     system_prompt: str,
     user_payload: dict[str, Any],

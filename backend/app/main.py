@@ -5,13 +5,17 @@ from contextlib import asynccontextmanager
 
 if platform.system() == "Windows":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+# ── LangSmith 早启动：必须在任何 langchain 模块导入前执行 ──
+import app.core.dependency.langsmith  # noqa: F401  side-effect: 注入 os.environ
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from app.api.v1.router import v1_router
 from app.db.base import Base
 from app.db.session import engine
-from app.core.checkpointer import init_checkpointer, shutdown_checkpointer
+from app.core.dependency.checkpointer import init_checkpointer, shutdown_checkpointer
 from app.exceptions import AppException
 
 logger = logging.getLogger(__name__)

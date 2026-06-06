@@ -147,6 +147,10 @@ async def _get_or_create_run(db: AsyncSession, workflow) -> WorkflowRun:
     # thread_id 绑定到持久化的 run.id
     run.thread_id = _thread_id(workflow.id, run.id)
     db.add(run)
+    # Workflow.current_run_id has a database-level FK to workflow_run.id.
+    # Flush the run first because there is no ORM relationship that lets
+    # SQLAlchemy infer the required INSERT-before-UPDATE ordering.
+    await db.flush([run])
     workflow.current_run_id = run.id
     workflow.langgraph_checkpoint_id = run.thread_id
     await db.commit()
@@ -361,7 +365,24 @@ async def run_workflow(workflow_id: uuid.UUID, engine: AsyncEngine | None = None
         if checkpointer is None:
             return
 
-        run = await _get_or_create_run(db, workflow)
+        try:
+            run = await _get_or_create_run(db, workflow)
+        except Exception as e:
+            logger.exception("工作流 %s 初始化运行实例失败: %s", workflow_id, e)
+            await db.rollback()
+            workflow = await get_workflow_by_uuid(db, workflow_id)
+            if workflow:
+                workflow.status = "failed"
+                workflow.error_message = f"工作流初始化失败: {str(e)[:900]}"
+                await db.commit()
+                await sse_manager.broadcast(workflow.id, {
+                    "event_type": EventType.WORKFLOW_FAILED.value,
+                    "error_code": "RUN_INITIALIZATION_ERROR",
+                    "error_message": workflow.error_message[:200],
+                })
+                await sse_manager.close_workflow(workflow.id)
+            return
+
         event_logger = EventLogger(db, workflow.id, run.execution_attempt, run_id=run.id)
         await event_logger.log(EventType.WORKFLOW_START, {"config": workflow.config, "run_id": str(run.id)}, node_name="__workflow__")
         await sse_manager.broadcast(workflow.id, {"event_type": EventType.WORKFLOW_START.value, "node_name": "__workflow__", "run_id": str(run.id)})

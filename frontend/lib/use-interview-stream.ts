@@ -44,6 +44,8 @@ export function useInterviewStream({ workflowId, token }: UseInterviewStreamOpti
         const decoder = new TextDecoder();
         let buffer = "";
         let inMeta = false;
+        let eventType = "message";
+        let receivedContent = false;
 
         while (true) {
           const { done, value } = await reader.read();
@@ -54,6 +56,11 @@ export function useInterviewStream({ workflowId, token }: UseInterviewStreamOpti
           buffer = lines.pop() || "";
 
           for (const line of lines) {
+            if (line.startsWith("event: ")) {
+              eventType = line.slice(7);
+              continue;
+            }
+
             if (line.includes("---META---")) {
               inMeta = true;
               continue;
@@ -61,6 +68,15 @@ export function useInterviewStream({ workflowId, token }: UseInterviewStreamOpti
 
             if (!line.startsWith("data: ")) continue;
             const data = line.slice(6);
+
+            if (eventType === "error") {
+              let message = "AI 回复失败，请重试。";
+              try {
+                const parsed = JSON.parse(data) as { message?: string };
+                message = parsed.message || message;
+              } catch {}
+              throw new Error(message);
+            }
 
             if (inMeta) {
               try {
@@ -78,9 +94,13 @@ export function useInterviewStream({ workflowId, token }: UseInterviewStreamOpti
             }
 
             if (data && data !== "[DONE]") {
+              receivedContent = true;
               onToken(data);
             }
           }
+        }
+        if (!receivedContent) {
+          throw new Error("AI 没有生成有效回复，请重试。");
         }
       } catch (err) {
         if ((err as Error).name !== "AbortError") {

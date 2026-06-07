@@ -1,6 +1,8 @@
+import asyncio
 import json
+import logging
 import uuid
-from typing import List, AsyncGenerator
+from typing import List, AsyncGenerator, Callable
 from sqlalchemy.ext.asyncio import AsyncSession
 from langchain_core.messages import HumanMessage, AIMessage, BaseMessage
 from tavily import AsyncTavilyClient
@@ -10,9 +12,13 @@ from app.db.queries.workflow_queries import get_workflow_by_uuid, get_message_hi
 from app.agents.interview_agent import InterviewAgent
 from app.agents.competitor_resolver import resolve_competitors
 from app.agents.product_profiler import build_product_profile
-from app.schemas.workflow import ProductProfile
+from app.schemas.workflow import ProductProfile, assign_competitor_groups, dedupe_competitor_names
 
 settings = get_settings()
+logger = logging.getLogger(__name__)
+
+INTERVIEW_RESPONSE_TIMEOUT_SECONDS = 120
+EMPTY_RESPONSE_FALLBACK = "刚才没有生成有效回复。请重新发送一次，或补充说明您希望继续确认的内容。"
 
 _tavily_client: AsyncTavilyClient | None = None
 _interview_agent: InterviewAgent | None = None
@@ -54,6 +60,51 @@ async def save_message(db: AsyncSession, workflow_id: uuid.UUID, role: str, cont
     await db.commit()
 
 
+def _looks_like_user_confirmation(text: str) -> bool:
+    normalized = "".join(str(text).strip().split()).lower()
+    if not normalized:
+        return False
+    confirmation_markers = [
+        "确认",
+        "可以开始",
+        "开始分析",
+        "就按这个来",
+        "按这个来",
+        "没问题",
+        "可以的",
+        "好的开始",
+        "开始吧",
+        "ok",
+        "okay",
+        "yes",
+    ]
+    revision_markers = [
+        "但是",
+        "不过",
+        "再改",
+        "修改",
+        "调整",
+        "补充",
+        "重新",
+        "不对",
+        "不太对",
+        "先别",
+        "等等",
+    ]
+    return any(marker in normalized for marker in confirmation_markers) and not any(
+        marker in normalized for marker in revision_markers
+    )
+
+
+def _should_mark_complete(full_response: str, history: List[InterviewMessageModel], user_message: str) -> bool:
+    if "---CONFIG_COMPLETE---" not in full_response:
+        return False
+    user_turns = sum(1 for msg in history if msg.role == "user")
+    if user_turns < 2:
+        return False
+    return _looks_like_user_confirmation(user_message)
+
+
 async def suggest_competitors(
     target_product: str,
     category: str,
@@ -62,7 +113,11 @@ async def suggest_competitors(
     competitor_count: int = 5,
     product_profile: ProductProfile | dict | None = None,
 ) -> List[str]:
-    """通过 Tavily 搜索推荐并校验竞品列表。网络异常时静默返回空列表。"""
+    """通过 Tavily 搜索推荐并校验竞品列表。
+
+    用户明确给出的竞品仍需经过相关性校验，避免把文章标题、功能描述或
+    不同品类产品直接带入后续分析。
+    """
     resolution = await resolve_competitors(
         client=_get_tavily_client(),
         target_product=target_product,
@@ -75,8 +130,7 @@ async def suggest_competitors(
     if resolution.competitors:
         return resolution.competitors
     if existing_competitors:
-        return existing_competitors
-
+        return dedupe_competitor_names(existing_competitors)
     # Fallback for categories not covered by deterministic extractors.
     try:
         query = f"与{target_product}同类的主流竞品产品有哪些，只返回产品名称列表，不返回其他内容"
@@ -88,9 +142,32 @@ async def suggest_competitors(
                     name = line.strip().strip("[]()（）【】\"'")
                     if name and name != target_product and len(name) < 30 and name not in competitors:
                         competitors.append(name)
-        return competitors[:5]
+        return dedupe_competitor_names(competitors)[:5]
     except Exception:
         return []
+
+
+def merge_competitor_groups(config, suggested: list[str]) -> None:
+    """将推荐竞品补齐到五类竞品槽位中，保留已有分类结果。"""
+    config.competitor_groups = assign_competitor_groups(suggested, config.competitor_groups)
+    config.competitors = config.competitors  # 触发后续 model_dump 前的字段读取一致性
+
+
+async def _collect_interview_response(
+    messages: List[BaseMessage],
+    agent_factory: Callable[[], InterviewAgent] = _get_interview_agent,
+) -> str:
+    """Collect an interview reply, retrying once when the provider returns no text."""
+    for attempt in range(2):
+        chunks: list[str] = []
+        async with asyncio.timeout(INTERVIEW_RESPONSE_TIMEOUT_SECONDS):
+            async for chunk in agent_factory().stream_response(messages):
+                chunks.append(chunk)
+        response = "".join(chunks)
+        if response.strip():
+            return response
+        logger.warning("Interview LLM returned an empty response (attempt %s/2)", attempt + 1)
+    return EMPTY_RESPONSE_FALLBACK
 
 
 async def stream_interview_response(
@@ -118,14 +195,11 @@ async def stream_interview_response(
     history = await get_message_history(db, workflow_id)
     lc_messages = convert_to_langchain_messages(history)
 
-    full_response = ""
-    async for chunk in _get_interview_agent().stream_response(lc_messages):
-        full_response += chunk
-        # 不立即 yield —— 等 suggest_competitors 完成后再推送
+    full_response = await _collect_interview_response(lc_messages)
 
     # -- Phase B: 提取 & 补全 config ----------------------------------------
     config = _get_interview_agent().try_extract_config(full_response)
-    is_complete = _get_interview_agent().is_complete_signal(full_response)
+    is_complete = _should_mark_complete(full_response, history, user_message)
 
     if config:
         workflow = await get_workflow_by_uuid(db, workflow_id)
@@ -145,6 +219,7 @@ async def stream_interview_response(
                 config.competitor_count,
                 config.product_profile,
             )
+            merge_competitor_groups(config, config.competitors)
             workflow.config = config.model_dump()
             await db.commit()
 
@@ -166,6 +241,7 @@ async def stream_interview_response(
     meta = {
         "is_complete": is_complete,
         "extracted_config": config.model_dump() if config else None,
-        "suggested_competitors": config.competitors if config else []
+        "suggested_competitors": config.competitors if config else [],
+        "suggested_competitor_groups": config.competitor_groups.model_dump() if config else None,
     }
     yield json.dumps(meta, ensure_ascii=False)

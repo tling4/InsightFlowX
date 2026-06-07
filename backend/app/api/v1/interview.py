@@ -1,3 +1,6 @@
+import asyncio
+import json
+import logging
 import uuid
 from fastapi import APIRouter, Depends, status
 from fastapi.responses import StreamingResponse
@@ -12,6 +15,7 @@ from app.services.workflow_service import confirm_interview
 from app.exceptions import WorkflowNotFoundError
 
 router = APIRouter(prefix="/workflows/{workflow_id}/interview", tags=["interview"])
+logger = logging.getLogger(__name__)
 
 
 @router.get("/history")
@@ -39,8 +43,15 @@ async def interview_stream(
         raise WorkflowNotFoundError(workflow_id)
 
     async def event_generator():
-        async for chunk in stream_interview_response(db, uuid.UUID(workflow_id), data.user_message):
-            yield f"data: {chunk}\n\n"
+        try:
+            async for chunk in stream_interview_response(db, uuid.UUID(workflow_id), data.user_message):
+                yield f"data: {chunk}\n\n"
+        except asyncio.TimeoutError:
+            logger.exception("Interview response timed out for workflow %s", workflow_id)
+            yield f"event: error\ndata: {json.dumps({'message': 'AI 回复超时，请重试。'}, ensure_ascii=False)}\n\n"
+        except Exception:
+            logger.exception("Interview response failed for workflow %s", workflow_id)
+            yield f"event: error\ndata: {json.dumps({'message': 'AI 回复失败，请重试。'}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(
         event_generator(),

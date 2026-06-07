@@ -7,13 +7,9 @@ import type {
   NodeProgressLevel,
   WorkflowEvent,
 } from "@/types/event";
+import { AGENT_NODE_ORDER } from "@/types/event";
 
-const NODE_ORDER: AgentNodeName[] = [
-  "information_collection",
-  "analysis",
-  "report_writing",
-  "review",
-];
+const NODE_ORDER: AgentNodeName[] = AGENT_NODE_ORDER;
 
 type NodeEntries = Record<AgentNodeName, NodeProgressEntry[]>;
 
@@ -24,12 +20,10 @@ interface ProgressState {
 }
 
 function createEmptyEntries(): NodeEntries {
-  return {
-    information_collection: [],
-    analysis: [],
-    report_writing: [],
-    review: [],
-  };
+  return NODE_ORDER.reduce((acc, node) => {
+    acc[node] = [];
+    return acc;
+  }, {} as NodeEntries);
 }
 
 function isAgentNodeName(value: unknown): value is AgentNodeName {

@@ -21,7 +21,6 @@ def _make_draft() -> ReportDraft:
                 source_refs=["https://example.com"],
             )
         ],
-        full_markdown="# Test Report\n\nContent",
     )
 
 
@@ -66,11 +65,40 @@ class TestReportAgent:
             result = await agent.run(state, ctx)
 
         agent.invoke_llm.assert_awaited_once()
+        assert agent.invoke_llm.call_args.kwargs["stream_response"] is False
         payload = agent.invoke_llm.call_args.args[1]
         assert payload["source_coverage_issue"] == "Missing source coverage for: 阿里语雀"
         assert payload["collection_errors"]["__source_coverage__"] == "Missing source coverage for: 阿里语雀"
         assert result["report"]["title"] == "Test Report"
         assert len(result["report"]["sections"]) == 1
+        assert "# Test Report" in result["report"]["full_markdown"]
+        assert "## Overview" in result["report"]["full_markdown"]
+
+    @pytest.mark.asyncio
+    async def test_report_llm_failure_falls_back_without_failing_workflow(self):
+        agent = ReportAgent()
+        ctx = _mock_ctx()
+        agent.log_and_broadcast = AsyncMock()
+        agent.invoke_llm = AsyncMock(side_effect=ValueError("invalid structured output"))
+
+        state = {
+            "config": {"target_product": "Notion", "competitors": ["语雀"]},
+            "raw_data": {
+                "Notion": [{"url": "https://example.com", "title": "Notion"}],
+                "语雀": [{"url": "https://example.com/yuque", "title": "语雀"}],
+            },
+            "feature_matrix": {},
+            "pricing_comparison": {},
+            "user_sentiment": {},
+            "swot": {},
+        }
+
+        with patch("app.agents.report_agent.llm_is_configured", return_value=True):
+            result = await agent.run(state, ctx)
+
+        assert result["report"]["title"] == "Notion 竞品分析报告"
+        assert result["report"]["sections"]
+        assert "## 执行摘要" in result["report"]["full_markdown"]
 
     @pytest.mark.asyncio
     async def test_competitor_resolution_error_stays_insufficient(self):
@@ -94,4 +122,28 @@ class TestReportAgent:
 
         agent.invoke_llm.assert_not_called()
         assert "资料不足" in result["report"]["title"]
-        assert len(result["report"]["sections"]) == 2
+        assert len(result["report"]["sections"]) == 7
+        assert any(section["heading"] == "关键流程图" for section in result["report"]["sections"])
+
+    def test_fallback_report_includes_mermaid_diagram_section(self):
+        agent = ReportAgent()
+        result = agent._fallback_report(
+            "Claude Code",
+            {
+                "target_product": "Claude Code",
+                "competitors": ["Cursor"],
+                "focus_dimensions": ["目标用户", "使用场景", "核心问题"],
+            },
+            {
+                "feature_matrix": {},
+                "pricing_comparison": {},
+                "user_sentiment": {},
+                "swot": {},
+                "competitor_role_analysis": {},
+            },
+            [],
+        )
+
+        assert any(section.heading == "关键流程图" for section in result.sections)
+        assert "```mermaid" in result.full_markdown
+        assert "Claude Code vs Cursor" in result.full_markdown

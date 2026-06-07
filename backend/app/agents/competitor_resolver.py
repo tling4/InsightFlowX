@@ -234,17 +234,17 @@ def detect_subcategory(target_product: str, category: str, product_profile: Prod
             return name
 
     lowered = normalize_competitor_name(target_product).lower()
-    if category == "硬件产品":
+    if category in {"硬件产品", "硬件 / 消费电子"}:
         if _contains_any(lowered, STRATEGIES["drone"].target_hints):
             return "drone"
         if _contains_any(lowered, STRATEGIES["smartphone"].target_hints):
             return "smartphone"
         return "generic"
-    if category == "SaaS / 协作工具":
+    if category in {"SaaS / 协作工具", "企业软件 / SaaS", "AI 产品 / 智能助手"}:
         if _contains_any(lowered, STRATEGIES["saas_workspace"].target_hints):
             return "saas_workspace"
         return "generic"
-    if category == "移动应用":
+    if category in {"移动应用", "平台 / 社区 / 内容", "电商 / 零售 / 本地生活"}:
         return "generic"
     return "generic"
 

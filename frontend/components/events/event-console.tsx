@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { WorkflowEvent, AgentNodeName } from "@/types/event";
+import { AGENT_NODE_ORDER } from "@/types/event";
 
 interface Props {
   events: WorkflowEvent[];
@@ -10,6 +11,12 @@ interface Props {
 const NODE_COLORS: Record<string, string> = {
   information_collection: "#3b82f6",
   analysis: "#8b5cf6",
+  feature_analysis: "#6366f1",
+  pricing_analysis: "#8b5cf6",
+  sentiment_analysis: "#06b6d4",
+  positioning_analysis: "#14b8a6",
+  role_analysis: "#a855f7",
+  gtm_analysis: "#f97316",
   report_writing: "#34d399",
   review: "#f59e0b",
 };
@@ -17,6 +24,12 @@ const NODE_COLORS: Record<string, string> = {
 const SHORT_NODE: Record<string, string> = {
   information_collection: "collect",
   analysis: "analysis",
+  feature_analysis: "feature",
+  pricing_analysis: "pricing",
+  sentiment_analysis: "sentiment",
+  positioning_analysis: "position",
+  role_analysis: "role",
+  gtm_analysis: "gtm",
   report_writing: "report",
   review: "review",
 };
@@ -67,7 +80,7 @@ export function EventConsole({ events }: Props) {
     <div className="flex flex-col h-full rounded-xl border border-[var(--border)] bg-[var(--bg-card)] overflow-hidden">
       <div className="flex items-center gap-1 px-3 py-2 border-b border-[var(--border)] bg-[var(--bg-elevated)] text-[11px]">
         <span className="text-[var(--text-muted)] mr-1 font-medium">FILTER:</span>
-        {(["all", "information_collection", "analysis", "report_writing", "review"] as const).map(
+        {(["all", ...AGENT_NODE_ORDER] as const).map(
           (f) => (
             <button
               key={f}

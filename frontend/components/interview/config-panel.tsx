@@ -7,7 +7,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { motion, AnimatePresence } from "framer-motion";
 import { Check, Plus, X, ChevronDown, Pencil } from "lucide-react";
 import { useState } from "react";
-import type { ProductProfile, WorkflowConfig } from "@/types/workflow";
+import type { CompetitorGroups, ProductCategory, ProductProfile, WorkflowConfig } from "@/types/workflow";
 
 interface Props {
   config: Partial<WorkflowConfig>;
@@ -44,9 +44,16 @@ export function ConfigPanel({
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const toggle = (k: string) => setCollapsed((p) => ({ ...p, [k]: !p[k] }));
   const productProfile = config.product_profile ?? emptyProductProfile(config);
+  const competitorGroups = config.competitor_groups ?? emptyCompetitorGroups();
   const updateProfile = (field: keyof ProductProfile, value: string | string[]) => {
     onConfigChange("product_profile", {
       ...productProfile,
+      [field]: value,
+    });
+  };
+  const updateCompetitorGroup = (field: keyof CompetitorGroups, value: string[]) => {
+    onConfigChange("competitor_groups", {
+      ...competitorGroups,
       [field]: value,
     });
   };
@@ -95,7 +102,7 @@ export function ConfigPanel({
 
         <FieldSection label="产品品类" collapsed={collapsed.category} onToggle={() => toggle("category")}>
           <div className="flex gap-1.5 flex-wrap">
-            {(["SaaS / 协作工具", "移动应用", "硬件产品"] as const).map((cat) => (
+            {(PRODUCT_CATEGORIES as readonly ProductCategory[]).map((cat) => (
               <button
                 key={cat}
                 onClick={() => onConfigChange("product_category", cat)}
@@ -178,34 +185,82 @@ export function ConfigPanel({
           </div>
         </FieldSection>
 
-        <FieldSection label="竞品" collapsed={collapsed.competitors} onToggle={() => toggle("competitors")}>
+        <FieldSection label="竞品与角色判断" collapsed={collapsed.competitors} onToggle={() => toggle("competitors")}>
+          <p className="text-[11px] text-[var(--text-muted)] mb-2">
+            这里优先展示你明确要分析的竞品；五类角色只是参考标签，不需要凑满才能开始分析。
+          </p>
+          <div className="space-y-2">
+            <GroupedCompetitorInput
+              label="核心竞品"
+              description="与我们高度重合，必须深挖"
+              value={competitorGroups.core}
+              placeholder="如：Notion"
+              onChange={(value) => updateCompetitorGroup("core", value)}
+            />
+            <GroupedCompetitorInput
+              label="标杆竞品"
+              description="更强更大，适合学习方向"
+              value={competitorGroups.benchmark}
+              placeholder="如：Confluence"
+              onChange={(value) => updateCompetitorGroup("benchmark", value)}
+            />
+            <GroupedCompetitorInput
+              label="潜力竞品"
+              description="规模未必大，但打法有亮点"
+              value={competitorGroups.potential}
+              placeholder="如：ClickUp"
+              onChange={(value) => updateCompetitorGroup("potential", value)}
+            />
+            <GroupedCompetitorInput
+              label="替代竞品"
+              description="形态不同，但解决同一需求"
+              value={competitorGroups.substitute}
+              placeholder="如：Airtable"
+              onChange={(value) => updateCompetitorGroup("substitute", value)}
+            />
+            <GroupedCompetitorInput
+              label="避坑竞品"
+              description="反面教材，帮助明确不做什么"
+              value={competitorGroups.pitfall}
+              placeholder="如：某失败案例产品"
+              onChange={(value) => updateCompetitorGroup("pitfall", value)}
+            />
+          </div>
+          <div className="mt-3 pt-3 border-t border-[var(--border)]">
+            <div className="text-[10px] text-[var(--text-muted)] mb-2">竞品总表</div>
+            <div className="flex flex-wrap gap-1.5">
+              {(config.competitors ?? []).map((c) => (
+                <Badge key={c} className="gap-1 bg-[var(--bg-elevated)] text-[var(--text-secondary)] border-[var(--border)]">
+                  {c}
+                  <X className="h-3 w-3 cursor-pointer hover:text-rose-400" onClick={() => onRemoveCompetitor(c)} />
+                </Badge>
+              ))}
+              {(!config.competitors || config.competitors.length === 0) && (
+                <span className="text-xs text-[var(--text-muted)] italic">先通过访谈确认你真正想分析的竞品...</span>
+              )}
+            </div>
+          </div>
           <div className="flex flex-wrap gap-1.5">
-            {(config.competitors ?? []).map((c) => (
-              <Badge key={c} className="gap-1 bg-[var(--bg-elevated)] text-[var(--text-secondary)] border-[var(--border)]">
-                {c}
-                <X className="h-3 w-3 cursor-pointer hover:text-rose-400" onClick={() => onRemoveCompetitor(c)} />
-              </Badge>
-            ))}
-            {(!config.competitors || config.competitors.length === 0) && (
-              <span className="text-xs text-[var(--text-muted)] italic">等待 AI 提取...</span>
-            )}
           </div>
           <div className="flex gap-1.5 mt-2">
             <Input value={newCompetitor} onChange={(e) => onNewCompetitorChange(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && onAddCompetitor()}
-              placeholder="追加竞品" className="h-8 text-xs bg-[var(--bg-elevated)] border-[var(--border)]"
+              placeholder="补充要分析的竞品" className="h-8 text-xs bg-[var(--bg-elevated)] border-[var(--border)]"
             />
             <Button size="sm" variant="ghost" onClick={onAddCompetitor}><Plus size={12} /></Button>
           </div>
         </FieldSection>
 
-        <FieldSection label="分析维度" collapsed={collapsed.dimensions} onToggle={() => toggle("dimensions")}>
+        <FieldSection label="系统分析框架" collapsed={collapsed.dimensions} onToggle={() => toggle("dimensions")}>
+          <p className="text-[11px] text-[var(--text-muted)] mb-2">
+            这里的维度由系统根据你的问题自动推断，不再要求你手动指定。
+          </p>
           <div className="flex flex-wrap gap-1.5">
             {(config.focus_dimensions ?? []).map((d) => (
               <Badge key={d} variant="success">{d}</Badge>
             ))}
             {(!config.focus_dimensions || config.focus_dimensions.length === 0) && (
-              <span className="text-xs text-[var(--text-muted)] italic">等待 AI 提取...</span>
+              <span className="text-xs text-[var(--text-muted)] italic">系统将自动补齐默认分析框架...</span>
             )}
           </div>
         </FieldSection>
@@ -274,6 +329,25 @@ function emptyProductProfile(config: Partial<WorkflowConfig>): ProductProfile {
   };
 }
 
+function emptyCompetitorGroups(): CompetitorGroups {
+  return {
+    core: [],
+    benchmark: [],
+    potential: [],
+    substitute: [],
+    pitfall: [],
+  };
+}
+
+const PRODUCT_CATEGORIES = [
+  "企业软件 / SaaS",
+  "AI 产品 / 智能助手",
+  "移动应用",
+  "硬件 / 消费电子",
+  "平台 / 社区 / 内容",
+  "电商 / 零售 / 本地生活",
+] as const;
+
 function ProfileInput({
   label,
   value,
@@ -312,6 +386,35 @@ function ListProfileInput({
   return (
     <label className="space-y-1">
       <span className="block text-[10px] text-[var(--text-muted)]">{label}</span>
+      <Input
+        value={(value ?? []).join(", ")}
+        onChange={(e) => onChange(splitProfileList(e.target.value))}
+        placeholder={placeholder}
+        className="h-8 text-xs bg-[var(--bg-elevated)] border-[var(--border)]"
+      />
+    </label>
+  );
+}
+
+function GroupedCompetitorInput({
+  label,
+  description,
+  value,
+  placeholder,
+  onChange,
+}: {
+  label: string;
+  description: string;
+  value?: string[];
+  placeholder?: string;
+  onChange: (value: string[]) => void;
+}) {
+  return (
+    <label className="space-y-1">
+      <div className="flex items-center justify-between gap-2">
+        <span className="block text-[10px] text-[var(--text-muted)]">{label}</span>
+        <span className="text-[10px] text-[var(--text-muted)]">{description}</span>
+      </div>
       <Input
         value={(value ?? []).join(", ")}
         onChange={(e) => onChange(splitProfileList(e.target.value))}

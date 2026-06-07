@@ -22,8 +22,27 @@ export type EventType =
 export type AgentNodeName =
   | "information_collection"
   | "analysis"
+  | "feature_analysis"
+  | "pricing_analysis"
+  | "sentiment_analysis"
+  | "positioning_analysis"
+  | "role_analysis"
+  | "gtm_analysis"
   | "report_writing"
   | "review";
+
+export const AGENT_NODE_ORDER: AgentNodeName[] = [
+  "information_collection",
+  "analysis",
+  "feature_analysis",
+  "pricing_analysis",
+  "sentiment_analysis",
+  "positioning_analysis",
+  "role_analysis",
+  "gtm_analysis",
+  "report_writing",
+  "review",
+];
 
 export interface WorkflowEvent {
   id?: string;

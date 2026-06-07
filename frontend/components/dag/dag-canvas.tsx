@@ -11,9 +11,15 @@ const nodeTypes = { dagNode: DagNode };
 
 const NODE_DEFINITIONS: Array<{ id: AgentNodeName; label: string; position: { x: number; y: number } }> = [
   { id: "information_collection", label: "CollectionAgent\n信息采集", position: { x: 160, y: 0 } },
-  { id: "analysis", label: "AnalysisAgent\n多维分析", position: { x: 160, y: 125 } },
-  { id: "report_writing", label: "ReportAgent\n报告撰写", position: { x: 160, y: 250 } },
-  { id: "review", label: "ReviewAgent\n质量审查", position: { x: 160, y: 375 } },
+  { id: "analysis", label: "AnalysisAgent\n分析编排", position: { x: 160, y: 140 } },
+  { id: "feature_analysis", label: "FeatureAnalysis\n功能矩阵", position: { x: 0, y: 300 } },
+  { id: "pricing_analysis", label: "PricingAnalysis\n定价分析", position: { x: 160, y: 300 } },
+  { id: "sentiment_analysis", label: "SentimentAnalysis\n用户反馈", position: { x: 320, y: 300 } },
+  { id: "positioning_analysis", label: "PositioningAnalysis\n定位判断", position: { x: 0, y: 460 } },
+  { id: "role_analysis", label: "RoleAnalysis\n角色判断", position: { x: 160, y: 460 } },
+  { id: "gtm_analysis", label: "GTMAnalysis\n上市增长", position: { x: 320, y: 460 } },
+  { id: "report_writing", label: "ReportAgent\n报告撰写", position: { x: 160, y: 620 } },
+  { id: "review", label: "ReviewAgent\n质量审查", position: { x: 160, y: 780 } },
 ];
 
 export type NodeStatus = "idle" | "active" | "completed" | "failed" | "rerouted";
@@ -21,10 +27,11 @@ export type NodeStatus = "idle" | "active" | "completed" | "failed" | "rerouted"
 interface Props {
   nodeStates: Record<AgentNodeName, { status: NodeStatus; message?: string; duration_ms?: number }>;
   hasReroute: boolean;
+  rerouteTarget?: AgentNodeName;
   onRetry?: (node: AgentNodeName) => void;
 }
 
-export function DagCanvas({ nodeStates, hasReroute, onRetry }: Props) {
+export function DagCanvas({ nodeStates, hasReroute, rerouteTarget = "analysis", onRetry }: Props) {
   const dataCacheRef = useRef<Map<string, DagNodeData>>(new Map());
   const rfInstance = useRef<any>(null);
 
@@ -78,7 +85,13 @@ export function DagCanvas({ nodeStates, hasReroute, onRetry }: Props) {
   const edges: Edge[] = useMemo(() => {
     const mainEdges: Edge[] = [
       { id: "e-c-a", source: "information_collection", target: "analysis" },
-      { id: "e-a-r", source: "analysis", target: "report_writing" },
+      { id: "e-a-f", source: "analysis", target: "feature_analysis" },
+      { id: "e-f-p", source: "feature_analysis", target: "pricing_analysis" },
+      { id: "e-p-s", source: "pricing_analysis", target: "sentiment_analysis" },
+      { id: "e-s-pos", source: "sentiment_analysis", target: "positioning_analysis" },
+      { id: "e-pos-role", source: "positioning_analysis", target: "role_analysis" },
+      { id: "e-role-gtm", source: "role_analysis", target: "gtm_analysis" },
+      { id: "e-gtm-r", source: "gtm_analysis", target: "report_writing" },
       { id: "e-r-rv", source: "report_writing", target: "review" },
     ].map((e) => ({
       ...e,
@@ -91,7 +104,7 @@ export function DagCanvas({ nodeStates, hasReroute, onRetry }: Props) {
       mainEdges.push({
         id: "e-reroute",
         source: "review",
-        target: "analysis",
+        target: rerouteTarget,
         animated: true,
         style: { stroke: "#f59e0b", strokeWidth: 2.5, strokeDasharray: "8 4" },
         markerEnd: { type: MarkerType.ArrowClosed, color: "#f59e0b" },
@@ -99,7 +112,7 @@ export function DagCanvas({ nodeStates, hasReroute, onRetry }: Props) {
     }
 
     return mainEdges;
-  }, [nodeStates, hasReroute]);
+  }, [nodeStates, hasReroute, rerouteTarget]);
 
   return (
     <div className="h-full w-full min-h-[300px] min-w-[200px] rounded-2xl border border-[var(--border)] bg-dot-grid overflow-hidden">

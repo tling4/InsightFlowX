@@ -56,6 +56,11 @@ def _make_review_dict(passed: bool, score: float = 75.0, target_node: str = "ana
         "feedback": "ok" if passed else "needs work",
         "target_node": target_node if not passed else None,
         "specific_issues": [] if passed else ["issue 1"],
+        "primary_issue_type": None if passed else "artifact_inconsistency",
+        "issue_types": [] if passed else ["artifact_inconsistency"],
+        "affected_entities": [] if passed else ["feature_matrix"],
+        "suggested_actions": [] if passed else ["rerun_analysis"],
+        "retry_worthiness": "none" if passed else "medium",
     }
 
 
@@ -131,6 +136,17 @@ class TestReviewRoutePolicy:
         )
         assert decision.next_node == "report_writing"
 
+    def test_human_structural_action_routes_to_target_node(self):
+        decision = ReviewRoutePolicy().decide(
+            {
+                "data": {"review_result": _make_review_dict(passed=False, target_node="analysis")},
+                "control": {"human_decision": {"action": "drop_competitor", "target_node": "information_collection"}},
+                "runtime": {},
+            },
+            CompetitiveAnalysisTemplate.node("review"),
+        )
+        assert decision.next_node == "information_collection"
+
     def test_human_jump_invalid_target_falls_back_to_review_agent_target_on_review_node(self):
         decision = ReviewRoutePolicy().decide(
             {
@@ -144,7 +160,7 @@ class TestReviewRoutePolicy:
 
     def test_non_jump_action_does_not_reroute_outside_review_node(self):
         spec = CompetitiveAnalysisTemplate.node("analysis")
-        assert spec.default_next == "report_writing"
+        assert spec.default_next == "feature_analysis"
 
     def test_review_node_uses_agent_target_node_once(self):
         decision = ReviewRoutePolicy().decide(
@@ -215,8 +231,17 @@ class TestDecisionRequest:
 
     def test_model_dump_json(self):
         d = DecisionRequest(action=DecisionAction.JUMP, target_node="analysis", feedback="re-collect")
-        dumped = d.model_dump(mode="json")
+        dumped = d.model_dump(mode="json", exclude_none=True)
         assert dumped == {"action": "jump", "target_node": "analysis", "feedback": "re-collect"}
+
+    def test_valid_replace_competitor_action(self):
+        d = DecisionRequest(
+            action=DecisionAction.REPLACE_COMPETITOR,
+            target_node="information_collection",
+            replacement_competitor="飞书",
+        )
+        assert d.action == DecisionAction.REPLACE_COMPETITOR
+        assert d.replacement_competitor == "飞书"
 
 
 # ---------------------------------------------------------------------------
@@ -318,6 +343,9 @@ class TestReviewAgentRuleBased:
         review = agent._rule_based_review(state)
         assert review.passed is False
         assert review.target_node == "information_collection"
+        assert review.primary_issue_type == "structural_coverage_gap"
+        assert "structural_coverage_gap" in review.issue_types
+        assert review.retry_worthiness == "low"
 
     def test_rule_based_review_failed_due_to_missing_competitor_source(self):
         agent = ReviewAgent()
@@ -351,6 +379,9 @@ class TestReviewAgentRuleBased:
         assert review.target_node == "information_collection"
         assert "Missing source coverage for: 拼多多" in review.feedback
         assert "以下产品缺少来源：拼多多" in review.feedback
+        assert review.primary_issue_type == "structural_coverage_gap"
+        assert "拼多多" in review.affected_entities
+        assert "review_competitor_scope" in review.suggested_actions
 
     def test_rule_based_review_failed_due_to_analysis_gaps(self):
         agent = ReviewAgent()
@@ -370,7 +401,10 @@ class TestReviewAgentRuleBased:
         }
         review = agent._rule_based_review(state)
         assert review.passed is False
-        assert review.target_node == "analysis"
+        assert review.target_node == "feature_analysis"
+        assert review.primary_issue_type == "artifact_inconsistency"
+        assert "rerun_analysis" in review.suggested_actions
+        assert review.retry_worthiness == "medium"
 
     def test_rule_based_review_failed_due_to_report_structure(self):
         agent = ReviewAgent()
@@ -391,6 +425,78 @@ class TestReviewAgentRuleBased:
         review = agent._rule_based_review(state)
         assert review.passed is False
         assert review.target_node == "report_writing"
+        assert review.primary_issue_type == "report_render_issue"
+        assert "rerender_report" in review.suggested_actions
+        assert review.retry_worthiness == "high"
+
+    def test_rule_based_review_classifies_transient_collection_failures(self):
+        agent = ReviewAgent()
+        state = {
+            "config": {
+                "target_product": "Notion",
+                "product_category": "企业软件 / SaaS",
+                "competitors": ["Confluence"],
+                "competitor_count": 1,
+            },
+            "report": {
+                "title": "Test Report",
+                "executive_summary": "summary here",
+                "full_markdown": "x" * 600,
+                "sections": [{"title": "s1"}, {"title": "s2"}, {"title": "s3"}, {"title": "s4"}],
+                "citations": [{"url": "http://example.com", "title": "ref"}],
+            },
+            "raw_data": {
+                "Notion": [{"url": "http://notion.example"}],
+                "Confluence": [],
+            },
+            "collection_errors": {
+                "Confluence": "Request timeout while calling Tavily search API",
+                "__source_coverage__": "Missing source coverage for: Confluence",
+            },
+            "feature_matrix": {"matrix": [{"feature": "f1"}]},
+            "pricing_comparison": {"plans": [{"name": "basic"}]},
+            "user_sentiment": {"per_product": {"Notion": "positive"}},
+            "swot": {"strengths": ["strong brand"]},
+        }
+        review = agent._rule_based_review(state)
+        assert review.passed is False
+        assert review.primary_issue_type == "transient_failure"
+        assert "transient_failure" in review.issue_types
+        assert "structural_coverage_gap" in review.issue_types
+        assert "retry_collection" in review.suggested_actions
+        assert review.retry_worthiness == "medium"
+
+    def test_rule_based_review_allows_insufficient_evidence_competitor(self):
+        agent = ReviewAgent()
+        state = {
+            "config": {
+                "target_product": "淘宝",
+                "product_category": "移动应用",
+                "competitors": ["京东", "拼多多"],
+                "competitor_count": 2,
+                "insufficient_evidence_competitors": ["拼多多"],
+            },
+            "report": {
+                "title": "Test Report",
+                "executive_summary": "summary here",
+                "full_markdown": "x" * 600,
+                "sections": [{"title": "s1"}, {"title": "s2"}, {"title": "s3"}, {"title": "s4"}],
+                "citations": [{"url": "http://example.com", "title": "ref"}],
+            },
+            "raw_data": {
+                "淘宝": [{"url": "http://taobao.example"}],
+                "京东": [{"url": "http://jd.example"}],
+                "拼多多": [],
+            },
+            "collection_errors": {"__source_coverage__": "Missing source coverage for: 拼多多"},
+            "feature_matrix": {"matrix": [{"feature": "f1"}]},
+            "pricing_comparison": {"plans": [{"name": "basic"}]},
+            "user_sentiment": {"per_product": {"淘宝": "positive"}},
+            "swot": {"strengths": ["strong brand"]},
+        }
+        review = agent._rule_based_review(state)
+        assert review.passed is True
+        assert review.retry_worthiness == "none"
 
     @pytest.mark.asyncio
     async def test_run_returns_review_result_when_review_fails(self):
@@ -442,6 +548,122 @@ class TestReviewAgentRuleBased:
         assert pause.node_id == "review"
         assert pause.suggested_route == "analysis"
         assert len(pause.options) == 3
+        assert pause.options[0]["label"] == "重新生成分析结果"
+        assert pause.context["primary_issue_type"] == "artifact_inconsistency"
+
+    def test_review_fail_pause_policy_builds_structural_gap_options(self):
+        from app.core.competitive_template import CompetitiveAnalysisTemplate
+        from app.core.runtime.policies import ReviewFailPausePolicy
+
+        spec = CompetitiveAnalysisTemplate.node("review")
+        policy = ReviewFailPausePolicy()
+        pause = policy.build_pause(
+            {
+                "data": {
+                    "review_result": {
+                        **_make_review_dict(passed=False, score=45, target_node="information_collection"),
+                        "primary_issue_type": "structural_coverage_gap",
+                        "issue_types": ["structural_coverage_gap"],
+                        "affected_entities": ["拼多多"],
+                        "suggested_actions": ["review_competitor_scope"],
+                        "retry_worthiness": "low",
+                    },
+                    "revision_count": 0,
+                    "max_revisions": 3,
+                },
+                "control": {"revision_count": 0, "max_revisions": 3},
+                "runtime": {"run_id": str(uuid.uuid4()), "thread_id": "thread"},
+            },
+            spec,
+        )
+
+        assert pause is not None
+        option_values = [opt["value"] for opt in pause.options]
+        assert option_values[:3] == [
+            "drop_competitor",
+            "keep_with_insufficient_evidence",
+            "replace_competitor",
+        ]
+
+    def test_review_fail_pause_policy_apply_drop_competitor(self):
+        from app.core.runtime.policies import ReviewFailPausePolicy
+
+        policy = ReviewFailPausePolicy()
+        applied = policy.apply_decision(
+            {
+                "data": {
+                    "config": {
+                        "target_product": "淘宝",
+                        "product_category": "移动应用",
+                        "competitors": ["京东", "拼多多"],
+                        "competitor_groups": {"core": ["京东"], "potential": ["拼多多"]},
+                    },
+                    "raw_data": {"淘宝": [{"url": "x"}], "京东": [{"url": "y"}], "拼多多": []},
+                    "collection_errors": {"拼多多": "timeout", "__source_coverage__": "Missing source coverage for: 拼多多"},
+                    "review_result": {"affected_entities": ["拼多多"]},
+                },
+                "control": {},
+            },
+            None,
+            {"action": "drop_competitor"},
+        )
+
+        config = applied["data"]["config"]
+        assert config["competitors"] == ["京东"]
+        assert "拼多多" not in (config.get("competitor_groups", {}).get("potential") or [])
+        assert "拼多多" not in applied["data"]["raw_data"]
+        assert "__source_coverage__" not in applied["data"]["collection_errors"]
+        assert applied["decision"]["target_node"] == "information_collection"
+
+    def test_review_fail_pause_policy_apply_drop_competitor_falls_back_when_explicit_invalid(self):
+        from app.core.runtime.policies import ReviewFailPausePolicy
+
+        policy = ReviewFailPausePolicy()
+        applied = policy.apply_decision(
+            {
+                "data": {
+                    "config": {
+                        "target_product": "淘宝",
+                        "product_category": "移动应用",
+                        "competitors": ["京东", "拼多多"],
+                    },
+                    "review_result": {"affected_entities": ["拼多多"]},
+                },
+                "control": {},
+            },
+            None,
+            {"action": "drop_competitor", "competitor": "输入框残留文本"},
+        )
+
+        assert applied["data"]["config"]["competitors"] == ["京东"]
+        assert applied["decision"]["target_node"] == "information_collection"
+        assert applied["decision"]["feedback"] == "移除竞品：拼多多"
+        assert applied["control"]["human_decision"]["feedback"] == "移除竞品：拼多多"
+
+    def test_review_fail_pause_policy_apply_keep_insufficient_evidence(self):
+        from app.core.runtime.policies import ReviewFailPausePolicy
+
+        policy = ReviewFailPausePolicy()
+        applied = policy.apply_decision(
+            {
+                "data": {
+                    "config": {
+                        "target_product": "淘宝",
+                        "product_category": "移动应用",
+                        "competitors": ["京东", "拼多多"],
+                    },
+                    "review_result": {"affected_entities": ["拼多多"]},
+                },
+                "control": {},
+            },
+            None,
+            {"action": "keep_with_insufficient_evidence"},
+        )
+
+        config = applied["data"]["config"]
+        assert "拼多多" in config["insufficient_evidence_competitors"]
+        assert applied["decision"]["target_node"] == "report_writing"
+        assert "证据不足" in config["extra_requirements"]
 
     @pytest.mark.asyncio
     async def test_run_no_pause_when_max_revisions_reached(self):

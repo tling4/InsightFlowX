@@ -230,6 +230,18 @@ class GraphRuntime:
                     decision = interrupt(payload)
                     if isinstance(decision, dict):
                         control["human_decision"] = decision
+                        apply_decision = getattr(spec.pause_policy, "apply_decision", None)
+                        if callable(apply_decision):
+                            applied = apply_decision(
+                                {"data": data, "control": control, "runtime": current_state.get("runtime") or {}},
+                                spec,
+                                dict(decision),
+                            )
+                            if isinstance(applied, dict):
+                                data = dict(applied.get("data") or data)
+                                control = dict(applied.get("control") or control)
+                                if isinstance(applied.get("decision"), dict):
+                                    control["human_decision"] = applied["decision"]
                     control["last_pause"] = payload
 
             # 2. 路由策略评估
@@ -301,12 +313,14 @@ class GraphRuntime:
             control:   当前 control dict（用于检查 human_decision）
         """
         human_decision = control.get("human_decision") or {}
+        human_action = human_decision.get("action")
         event = await self.event_logger.log(
             event_type=EventType.REROUTE,
             payload={
                 "from_node": from_node,
                 "to_node": to_node,
-                "trigger": "human_jump" if human_decision.get("action") == "jump" else "policy",
+                "trigger": "human_decision" if human_action and human_action not in {"approve", "abort"} else "policy",
+                "action": human_action or "",
                 "feedback": human_decision.get("feedback", ""),
             },
             node_name="__workflow__",

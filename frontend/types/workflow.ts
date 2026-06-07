@@ -7,7 +7,15 @@ export type WorkflowStatus =
   | "failed"
   | "cancelled";
 
-export type ProductCategory = "SaaS / 协作工具" | "移动应用" | "硬件产品";
+export type ProductCategory =
+  | "企业软件 / SaaS"
+  | "AI 产品 / 智能助手"
+  | "移动应用"
+  | "硬件 / 消费电子"
+  | "平台 / 社区 / 内容"
+  | "电商 / 零售 / 本地生活"
+  | "SaaS / 协作工具"
+  | "硬件产品";
 
 export interface ProductProfile {
   canonical_name: string;
@@ -22,12 +30,21 @@ export interface ProductProfile {
   exclude_relations: string[];
 }
 
+export interface CompetitorGroups {
+  core: string[];
+  benchmark: string[];
+  potential: string[];
+  substitute: string[];
+  pitfall: string[];
+}
+
 export interface WorkflowConfig {
   target_product: string;
   product_category: ProductCategory;
   product_profile?: ProductProfile | null;
   focus_dimensions: string[];
   competitor_count: number;
+  competitor_groups: CompetitorGroups;
   competitors: string[];
   language: string;
   extra_requirements: string;
@@ -47,8 +64,21 @@ export interface WorkflowDetail {
   pause_state?: {
     paused_by_node: string;
     pause_reason: string;
-    pause_options: Array<{ value: string; label: string; target_node?: string }>;
-    pause_context?: Record<string, unknown>;
+    pause_options: Array<{ value: string; label: string; target_node?: string; requires_input?: boolean }>;
+    pause_context?: {
+      score?: number;
+      checks?: Array<{ dimension: string; passed: boolean; detail: string }>;
+      specific_issues?: string[];
+      target_node?: string;
+      primary_issue_type?: string | null;
+      issue_types?: string[];
+      affected_entities?: string[];
+      affected_artifacts?: string[];
+      suggested_actions?: string[];
+      retry_worthiness?: "high" | "medium" | "low" | "none" | "unknown" | string;
+      retry_scope?: string | null;
+      [key: string]: unknown;
+    };
     /** 暂停时 DAG state 快照（供 resume 复用 cached_review_result） */
     dag_state?: Record<string, unknown>;
     paused_at: string;

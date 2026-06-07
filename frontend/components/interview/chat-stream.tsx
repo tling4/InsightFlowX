@@ -14,6 +14,9 @@ interface Props {
 
 export function ChatStream({ messages, isStreaming, onQuickReply }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const visibleMessages = messages.filter(
+    (msg, index) => Boolean(msg.content) || (isStreaming && index === messages.length - 1),
+  );
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -23,7 +26,7 @@ export function ChatStream({ messages, isStreaming, onQuickReply }: Props) {
 
   return (
     <div ref={scrollRef} className="flex-1 overflow-y-auto p-6 space-y-6">
-      {messages.map((msg, i) => (
+      {visibleMessages.map((msg, i) => (
         <div key={i} className={`flex w-full ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
           <div
             className={`max-w-[75%] rounded-2xl px-5 py-4 text-sm leading-relaxed ${
@@ -71,7 +74,7 @@ export function ChatStream({ messages, isStreaming, onQuickReply }: Props) {
                 </div>
               )
             ) : (
-              isStreaming && i === messages.length - 1 && (
+              isStreaming && i === visibleMessages.length - 1 && (
                 <div className="flex items-center gap-2 text-zinc-500">
                   <Spinner size={14} />
                   <span className="text-xs">AI 正在思考...</span>
@@ -81,7 +84,7 @@ export function ChatStream({ messages, isStreaming, onQuickReply }: Props) {
           </div>
         </div>
       ))}
-      {messages.length === 0 && (
+      {visibleMessages.length === 0 && (
         <div className="flex flex-col items-center justify-center h-full text-center gap-3">
           <div className="w-12 h-12 rounded-full bg-[var(--bg-elevated)] flex items-center justify-center">
             <svg className="w-6 h-6 text-[var(--text-muted)]" fill="none" viewBox="0 0 24 24" stroke="currentColor">

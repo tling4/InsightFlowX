@@ -8,30 +8,13 @@ from app.config import get_settings
 from app.core.runtime.context import AgentContext
 from app.schemas.event import EventType
 from app.schemas.competitor import CompetitorInfo, SearchResult
+from app.schemas.search import SearchQueryPlan
 from app.agents.competitor_resolver import normalize_competitor_name, resolve_competitors
+from app.agents.query_planner import build_search_query_plan
 
 
-# 不同产品类别的搜索意图不同：
-# - SaaS: 侧重定价页和用户社区（知乎、少数派）
-# - 移动应用: 侧重应用商店评分（Apple Store、酷安）
-# - 硬件: 侧重评测和价格追踪（知乎、什么值得买）
-SEARCH_QUERY_TEMPLATES = {
-    "SaaS / 协作工具": [
-        "{product} 功能 定价 用户评价",
-        "{product} 竞品 对比 优缺点",
-        "{product} pricing features reviews",
-    ],
-    "移动应用": [
-        "{product} 功能 评分 用户评价",
-        "{product} App 体验 优缺点",
-        "{product} app pricing reviews",
-    ],
-    "硬件产品": [
-        "{product} 参数 价格 评测",
-        "{product} 优缺点 用户评价",
-        "{product} specs price review",
-    ],
-}
+MIN_PRODUCT_SOURCES = 6
+MAX_RECOVERY_QUERIES = 6
 
 
 class CollectionAgent(BaseAgent):
@@ -74,6 +57,8 @@ class CollectionAgent(BaseAgent):
 
         raw_data: dict[str, list] = {product: [] for product in products}
         collection_errors: dict[str, str] = {}
+        search_plan: SearchQueryPlan | None = None
+        search_coverage: dict[str, dict] = {}
         competitors = [CompetitorInfo(name=name, category=category).model_dump(mode="json") for name in competitor_names]
 
         if not tavily_is_configured():
@@ -145,12 +130,29 @@ class CollectionAgent(BaseAgent):
                 raw_data = {product: [] for product in products}
                 await self.emit_progress(
                     ctx,
+                    stage="plan_queries",
+                    message="正在根据产品画像、分析维度和业务问题生成结构化搜索计划。",
+                )
+                search_plan = await build_search_query_plan(
+                    product_category=category,
+                    product_profile=config.get("product_profile"),
+                    focus_dimensions=focus_dimensions,
+                    extra_requirements=config.get("extra_requirements", ""),
+                )
+                await self.log_and_broadcast(ctx, EventType.TOOL_RESULT, {
+                    "tool": "query_planner",
+                    "strategy_summary": search_plan.strategy_summary,
+                    "query_count": len(search_plan.queries),
+                    "intents": [spec.intent for spec in search_plan.queries],
+                })
+                await self.emit_progress(
+                    ctx,
                     stage="collect_sources",
                     message=f"正在为 {len(products)} 个产品搜索公开来源，并并发收集可用证据。",
                 )
                 # 所有产品的搜索并发执行，总耗时 = max(单产品耗时) 而非 sum
                 tasks = [
-                    self._collect_for_product(client, product, category, focus_dimensions, ctx)
+                    self._collect_for_product(client, product, search_plan, ctx)
                     for product in products
                 ]
                 # gather(return_exceptions=True)：单个产品失败不影响其他产品
@@ -161,6 +163,7 @@ class CollectionAgent(BaseAgent):
                         raw_data[product] = []
                     else:
                         raw_data[product] = [item.model_dump(mode="json") for item in result]
+                search_coverage = self._build_search_coverage(raw_data, search_plan)
 
                 missing_sources = [
                     product for product in products
@@ -195,6 +198,10 @@ class CollectionAgent(BaseAgent):
                 "collected_competitors": len(raw_data),
                 "total_sources": total_sources,
                 "failed_competitors": len(collection_errors),
+                "products_with_dimension_gaps": sum(
+                    1 for coverage in search_coverage.values()
+                    if coverage.get("missing_dimensions")
+                ),
             },
             "duration_ms": duration_ms,
         })
@@ -204,6 +211,8 @@ class CollectionAgent(BaseAgent):
             "raw_data": raw_data,
             "collection_errors": collection_errors,
             "competitors": competitors,
+            "search_plan": search_plan.model_dump(mode="json") if search_plan else {},
+            "search_coverage": search_coverage,
             "context_summaries": {},
             "current_phase": "collecting",
         }
@@ -212,21 +221,17 @@ class CollectionAgent(BaseAgent):
         self,
         client: AsyncTavilyClient,
         product: str,
-        category: str,
-        focus_dimensions: list[str],
+        search_plan: SearchQueryPlan,
         ctx: AgentContext,
     ) -> list[SearchResult]:
         """对单个产品执行多查询搜索，URL 去重后返回结果列表。
 
         搜索策略：
-        1. 从 SEARCH_QUERY_TEMPLATES 取产品类别对应的 3 条模板查询
-        2. 追加一条由用户关注维度拼接的自定义查询
-        3. 每条查询取最多 4 条结果，按 URL 去重
+        1. 渲染工作流级 Query Planner 生成的结构化计划
+        2. 执行按意图拆分的窄查询
+        3. 对未覆盖维度和低总召回执行规划器提供的补救查询
         """
-        templates = SEARCH_QUERY_TEMPLATES.get(category, SEARCH_QUERY_TEMPLATES["SaaS / 协作工具"])
-        focus = " ".join(focus_dimensions[:4]) if focus_dimensions else "功能 定价 用户评价 市场定位"
-        queries = [template.format(product=product) for template in templates]
-        queries.append(f"{product} {focus}")
+        queries = self._render_query_plan(product, search_plan)
         await self.emit_progress(
             ctx,
             stage="search_product",
@@ -236,12 +241,12 @@ class CollectionAgent(BaseAgent):
         await self.log_and_broadcast(ctx, EventType.TOOL_CALL, {
             "tool": "tavily.search",
             "product": product,
-            "queries": queries,
+            "queries": [query for _, query in queries],
         })
 
-        seen_urls: set[str] = set()
+        collected_by_url: dict[str, SearchResult] = {}
         collected: list[SearchResult] = []
-        for query in queries:
+        for intent, query in queries:
             response = await client.search(
                 query=query,
                 max_results=4,
@@ -250,24 +255,81 @@ class CollectionAgent(BaseAgent):
             )
             for item in response.get("results", []):
                 url = item.get("url", "")
-                if not url or url in seen_urls:
+                if not url:
                     continue
-                if not self._result_mentions_product(product, item):
+                if not self._result_is_relevant(product, item, query):
                     continue
-                seen_urls.add(url)
-                collected.append(SearchResult(
+                if url in collected_by_url:
+                    existing = collected_by_url[url]
+                    if intent not in existing.source_intents:
+                        existing.source_intents.append(intent)
+                    continue
+                result = SearchResult(
                     url=url,
                     title=item.get("title") or url,
                     snippet=item.get("content") or item.get("snippet") or "",
                     content_summary=item.get("content"),
+                    source_query=query,
+                    source_intent=intent,
+                    source_intents=[intent],
                     relevance_score=float(item.get("score") or 0),
                     retrieved_at=datetime.utcnow(),
-                ))
+                )
+                collected_by_url[url] = result
+                collected.append(result)
 
+        covered_intents = {
+            intent
+            for item in collected
+            for intent in (item.source_intents or ([item.source_intent] if item.source_intent else []))
+        }
+        fallback_queries = self._build_recovery_query_plan(
+            product,
+            search_plan,
+            covered_intents,
+            len(collected),
+        )
+        if fallback_queries:
+            for intent, query in fallback_queries:
+                response = await client.search(
+                    query=query,
+                    max_results=6,
+                    search_depth="advanced",
+                    include_answer=False,
+                )
+                for item in response.get("results", []):
+                    url = item.get("url", "")
+                    if not url or not self._result_is_relevant(product, item, query):
+                        continue
+                    if url in collected_by_url:
+                        existing = collected_by_url[url]
+                        if intent not in existing.source_intents:
+                            existing.source_intents.append(intent)
+                        continue
+                    result = SearchResult(
+                        url=url,
+                        title=item.get("title") or url,
+                        snippet=item.get("content") or item.get("snippet") or "",
+                        content_summary=item.get("content"),
+                        source_query=query,
+                        source_intent=intent,
+                        source_intents=[intent],
+                        relevance_score=float(item.get("score") or 0),
+                        retrieved_at=datetime.utcnow(),
+                    )
+                    collected_by_url[url] = result
+                    collected.append(result)
+
+        collected.sort(key=lambda item: item.relevance_score, reverse=True)
         await self.log_and_broadcast(ctx, EventType.TOOL_RESULT, {
             "tool": "tavily.search",
             "product": product,
             "source_count": len(collected),
+            "covered_intents": sorted({
+                intent
+                for item in collected
+                for intent in (item.source_intents or ([item.source_intent] if item.source_intent else []))
+            }),
         })
         await self.emit_progress(
             ctx,
@@ -277,8 +339,95 @@ class CollectionAgent(BaseAgent):
         )
         return collected
 
+    def _render_query_plan(
+        self,
+        product: str,
+        search_plan: SearchQueryPlan,
+    ) -> list[tuple[str, str]]:
+        """Render one workflow-level plan for a concrete product."""
+        return self._dedupe_query_plan([
+            (spec.intent, spec.query_template.format(product=product))
+            for spec in search_plan.queries
+        ])
+
+    def _build_recovery_query_plan(
+        self,
+        product: str,
+        search_plan: SearchQueryPlan,
+        covered_intents: set[str],
+        source_count: int,
+    ) -> list[tuple[str, str]]:
+        """Use planner-provided alternatives for uncovered or weakly covered intents."""
+        queries: list[tuple[str, str]] = []
+        uncovered_specs = [spec for spec in search_plan.queries if spec.intent not in covered_intents]
+        uncovered_specs.sort(key=lambda spec: (not spec.intent.startswith("dimension:"), spec.intent))
+        for recovery_index in range(2):
+            for spec in uncovered_specs:
+                if recovery_index < len(spec.recovery_query_templates):
+                    queries.append((
+                        spec.intent,
+                        spec.recovery_query_templates[recovery_index].format(product=product),
+                    ))
+
+        if source_count < MIN_PRODUCT_SOURCES:
+            for spec in search_plan.queries:
+                if spec.intent in {"official", "independent_evidence", "overview"}:
+                    queries.extend(
+                        (spec.intent, template.format(product=product))
+                        for template in spec.recovery_query_templates
+                    )
+        return self._dedupe_query_plan(queries)[:MAX_RECOVERY_QUERIES]
+
+    @staticmethod
+    def _dedupe_query_plan(queries: list[tuple[str, str]]) -> list[tuple[str, str]]:
+        seen: set[str] = set()
+        deduped: list[tuple[str, str]] = []
+        for intent, query in queries:
+            if query in seen:
+                continue
+            seen.add(query)
+            deduped.append((intent, query))
+        return deduped
+
+    def _result_is_relevant(self, product: str, item: dict, query: str) -> bool:
+        """Accept explicit entity matches and high-confidence search-engine matches.
+
+        Official help pages often omit the parent product name from their title and
+        snippet. Requiring a literal mention dropped those valuable narrow sources.
+        """
+        if self._result_mentions_product(product, item):
+            return True
+        score = float(item.get("score") or 0)
+        return score >= 0.55 and normalize_competitor_name(product).lower() in query.lower()
+
+    @staticmethod
+    def _build_search_coverage(raw_data: dict[str, list], search_plan: SearchQueryPlan) -> dict[str, dict]:
+        planned_intents = [spec.intent for spec in search_plan.queries]
+        dimension_intents = {intent for intent in planned_intents if intent.startswith("dimension:")}
+        coverage: dict[str, dict] = {}
+        for product, items in raw_data.items():
+            covered = {
+                intent
+                for item in items
+                if isinstance(item, dict)
+                for intent in (item.get("source_intents") or [item.get("source_intent")])
+                if intent
+            }
+            missing = [intent for intent in planned_intents if intent not in covered]
+            coverage[product] = {
+                "source_count": len(items),
+                "covered_intents": sorted(covered),
+                "missing_intents": missing,
+                "missing_dimensions": [
+                    intent.removeprefix("dimension:")
+                    for intent in missing
+                    if intent in dimension_intents
+                ],
+            }
+        return coverage
+
     def _result_mentions_product(self, product: str, item: dict) -> bool:
-        """Keep a search result only when it is visibly about the queried product."""
+        """Return whether a search result visibly mentions the queried product."""
         product_name = normalize_competitor_name(product)
         if not product_name:
             return False

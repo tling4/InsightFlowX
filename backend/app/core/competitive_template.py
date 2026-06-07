@@ -5,16 +5,16 @@
 
 图拓扑（线性 DAG，review 节点支持条件回跳）:
 
-    information_collection ──→ analysis ──→ report_writing ──→ review ──→ done
-         │                        │              │                │
-         │                        │              │         （未通过时回跳到
-         │                        │              │          任何允许的节点）
-         │                        │              │
-         产出: collection_raw     产出:           产出: report
-                                feature_matrix
-                                pricing_comparison
-                                user_sentiment
-                                swot_analysis
+    information_collection
+        └→ analysis
+            └→ feature_analysis
+                └→ pricing_analysis
+                    └→ sentiment_analysis
+                        └→ positioning_analysis
+                            └→ role_analysis
+                                └→ gtm_analysis
+                                    └→ report_writing
+                                        └→ review
 
 所有节点都通过 allowed_routes=REROUTE_TARGETS 允许被 review 回跳，
 但只有 review 节点配置了可触发 reroute 的策略（ReviewRoutePolicy +
@@ -31,7 +31,17 @@ from app.core.runtime.policies import DefaultRoutePolicy, ReviewFailPausePolicy,
 from app.core.runtime.template import ArtifactDraft, GraphTemplate, NodeSpec, RetryPolicy
 
 # review 不通过时可回跳的目标节点集合
-REROUTE_TARGETS = ("information_collection", "analysis", "report_writing")
+REROUTE_TARGETS = (
+    "information_collection",
+    "analysis",
+    "feature_analysis",
+    "pricing_analysis",
+    "sentiment_analysis",
+    "positioning_analysis",
+    "role_analysis",
+    "gtm_analysis",
+    "report_writing",
+)
 
 # 单例 agent 实例（无状态，复用）
 _collection_agent = CollectionAgent()
@@ -56,27 +66,40 @@ def _collection_artifacts(patch: dict, data: dict) -> list[ArtifactDraft]:
 
 
 def _analysis_artifacts(patch: dict, data: dict) -> list[ArtifactDraft]:
-    """分析阶段制品工厂 —— 从 patch 中提取四类分析结果并分别持久化。"""
+    """分析编排阶段制品工厂 —— 当前只持久化未拆出的 swot artifact。"""
     config = data.get("config", {}) if isinstance(data.get("config"), dict) else {}
     target = config.get("target_product", "")
     artifacts: list[ArtifactDraft] = []
-    for artifact_type, key in [
-        ("feature_matrix", "feature_matrix"),
-        ("pricing_comparison", "pricing_comparison"),
-        ("user_sentiment", "user_sentiment"),
-        ("swot_analysis", "swot"),
-    ]:
-        content = patch.get(key)
-        if content is not None:
-            artifacts.append(
-                ArtifactDraft(
-                    artifact_type=artifact_type,
-                    title=f"{target} {artifact_type}",
-                    content=content,
-                    created_by_node="analysis",
-                )
+    content = patch.get("swot")
+    if content is not None:
+        artifacts.append(
+            ArtifactDraft(
+                artifact_type="swot_analysis",
+                title=f"{target} swot_analysis",
+                content=content,
+                created_by_node="analysis",
             )
+        )
     return artifacts
+
+
+def _single_analysis_artifact(node_id: str, artifact_type: str, key: str):
+    def _factory(patch: dict, data: dict) -> list[ArtifactDraft]:
+        content = patch.get(key)
+        if content is None:
+            return []
+        config = data.get("config", {}) if isinstance(data.get("config"), dict) else {}
+        target = config.get("target_product", "")
+        return [
+            ArtifactDraft(
+                artifact_type=artifact_type,
+                title=f"{target} {artifact_type}",
+                content=content,
+                created_by_node=node_id,
+            )
+        ]
+
+    return _factory
 
 
 def _report_artifacts(patch: dict, data: dict) -> list[ArtifactDraft]:
@@ -117,7 +140,10 @@ def make_initial_data(workflow) -> dict:
         "feature_matrix": None,
         "pricing_comparison": None,
         "user_sentiment": None,
+        "positioning_analysis": None,
         "swot": None,
+        "gtm_analysis": None,
+        "analysis_modules": {},
         "report": None,
         "review_result": None,
         "revision_count": 0,
@@ -147,11 +173,65 @@ CompetitiveAnalysisTemplate = GraphTemplate(
         NodeSpec(
             id="analysis",
             agent=_analysis_agent,
-            default_next="report_writing",
+            default_next="feature_analysis",
             allowed_routes=REROUTE_TARGETS,
             retry_policy=RetryPolicy(max_attempts=3, timeout_sec=300),
             route_policy=DefaultRoutePolicy(),
             artifact_factory=_analysis_artifacts,
+        ),
+        NodeSpec(
+            id="feature_analysis",
+            agent=_analysis_agent,
+            default_next="pricing_analysis",
+            allowed_routes=REROUTE_TARGETS,
+            retry_policy=RetryPolicy(max_attempts=3, timeout_sec=300),
+            route_policy=DefaultRoutePolicy(),
+            artifact_factory=_single_analysis_artifact("feature_analysis", "feature_matrix", "feature_matrix"),
+        ),
+        NodeSpec(
+            id="pricing_analysis",
+            agent=_analysis_agent,
+            default_next="sentiment_analysis",
+            allowed_routes=REROUTE_TARGETS,
+            retry_policy=RetryPolicy(max_attempts=3, timeout_sec=300),
+            route_policy=DefaultRoutePolicy(),
+            artifact_factory=_single_analysis_artifact("pricing_analysis", "pricing_comparison", "pricing_comparison"),
+        ),
+        NodeSpec(
+            id="sentiment_analysis",
+            agent=_analysis_agent,
+            default_next="positioning_analysis",
+            allowed_routes=REROUTE_TARGETS,
+            retry_policy=RetryPolicy(max_attempts=3, timeout_sec=300),
+            route_policy=DefaultRoutePolicy(),
+            artifact_factory=_single_analysis_artifact("sentiment_analysis", "user_sentiment", "user_sentiment"),
+        ),
+        NodeSpec(
+            id="positioning_analysis",
+            agent=_analysis_agent,
+            default_next="role_analysis",
+            allowed_routes=REROUTE_TARGETS,
+            retry_policy=RetryPolicy(max_attempts=3, timeout_sec=300),
+            route_policy=DefaultRoutePolicy(),
+            artifact_factory=_single_analysis_artifact("positioning_analysis", "positioning_analysis", "positioning_analysis"),
+        ),
+        NodeSpec(
+            id="role_analysis",
+            agent=_analysis_agent,
+            default_next="gtm_analysis",
+            allowed_routes=REROUTE_TARGETS,
+            retry_policy=RetryPolicy(max_attempts=3, timeout_sec=300),
+            route_policy=DefaultRoutePolicy(),
+            artifact_factory=_single_analysis_artifact("role_analysis", "competitor_role_analysis", "competitor_role_analysis"),
+        ),
+        NodeSpec(
+            id="gtm_analysis",
+            agent=_analysis_agent,
+            default_next="report_writing",
+            allowed_routes=REROUTE_TARGETS,
+            retry_policy=RetryPolicy(max_attempts=3, timeout_sec=300),
+            route_policy=DefaultRoutePolicy(),
+            artifact_factory=_single_analysis_artifact("gtm_analysis", "gtm_analysis", "gtm_analysis"),
         ),
         NodeSpec(
             id="report_writing",

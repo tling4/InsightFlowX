@@ -3,10 +3,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.session import get_async_session
 from app.dependencies import get_current_user
 from app.schemas.auth import UserResponse
-from app.schemas.workflow import WorkflowConfig, WorkflowCreate
+from app.schemas.workflow import WorkflowConfig, WorkflowCreate, WorkflowUpdate
 from app.schemas.decision import DecisionRequest
 from app.db.queries.workflow_queries import get_workflow_by_id, get_user_workflows
-from app.services.workflow_service import create_workflow, start_workflow, cancel_workflow, delete_workflow, restart_workflow
+from app.services.workflow_service import create_workflow, update_workflow_title, start_workflow, cancel_workflow, delete_workflow, restart_workflow
 from app.services.sse_service import sse_manager
 from app.services.event_service import EventLogger
 from app.schemas.event import EventType
@@ -87,19 +87,14 @@ async def start_workflow_endpoint(
 
 
 @router.patch("/{workflow_id}")
-async def update_workflow(
+async def update_workflow_endpoint(
     workflow_id: str,
-    body: dict = Body(...),
+    body: WorkflowUpdate,
     current_user: UserResponse = Depends(get_current_user),
     db: AsyncSession = Depends(get_async_session),
 ):
-    workflow = await get_workflow_by_id(db, workflow_id, current_user.id)
-    if not workflow:
-        raise WorkflowNotFoundError(workflow_id)
-    if "title" in body and isinstance(body["title"], str) and body["title"].strip():
-        workflow.title = body["title"].strip()
-        await db.commit()
-    return {"id": str(workflow.id), "title": workflow.title, "status": workflow.status}
+    workflow = await update_workflow_title(db, workflow_id, current_user.id, body.title)
+    return {"workflow_id": str(workflow.id), "title": workflow.title, "status": workflow.status}
 
 
 @router.delete("/{workflow_id}")
@@ -165,6 +160,9 @@ async def human_decide(
     """人在回路决策端点。
 
     - jump:   从 checkpoint 恢复，跳转到指定 target_node 重新执行
+    - drop_competitor: 移除问题竞品后恢复执行
+    - keep_with_insufficient_evidence: 保留问题竞品，但允许证据不足继续
+    - replace_competitor: 用新的竞品替换问题竞品后恢复执行
     - approve: 强制接受当前结果，标记 completed
     - abort:   放弃执行，标记 cancelled
     """
@@ -192,7 +190,7 @@ async def human_decide(
         if run:
             run.status = "completed"
             run.completed_at = datetime.now(timezone.utc)
-        await _resolve_current_pauses(db, workflow.id, run.id if run else None, decision.model_dump(mode="json"))
+        await _resolve_current_pauses(db, workflow.id, run.id if run else None, decision.model_dump(mode="json", exclude_none=True))
         await db.commit()
         await sse_manager.close_workflow(workflow.id)
         return {"workflow_id": str(workflow.id), "status": "completed", "action": "approve"}
@@ -214,7 +212,7 @@ async def human_decide(
         if run:
             run.status = "cancelled"
             run.completed_at = datetime.now(timezone.utc)
-        await _resolve_current_pauses(db, workflow.id, run.id if run else None, decision.model_dump(mode="json"))
+        await _resolve_current_pauses(db, workflow.id, run.id if run else None, decision.model_dump(mode="json", exclude_none=True))
         await db.commit()
         await sse_manager.close_workflow(workflow.id)
         return {"workflow_id": str(workflow.id), "status": "cancelled", "action": "abort"}

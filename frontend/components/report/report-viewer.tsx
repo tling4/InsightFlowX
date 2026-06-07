@@ -3,6 +3,7 @@
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { ReportOutput } from "@/types/artifact";
+import { MermaidDiagram } from "@/components/report/mermaid-diagram";
 
 interface Props {
   report: ReportOutput;
@@ -47,6 +48,18 @@ export function ReportViewer({ report, activeSection, onCitationClick }: Props) 
               </h2>
             );
           },
+          code: ({ className, children }) => {
+            const value = String(children).replace(/\n$/, "");
+            if (className?.includes("language-mermaid")) {
+              return <MermaidDiagram chart={value} />;
+            }
+            return (
+              <code className={className}>
+                {children}
+              </code>
+            );
+          },
+          pre: ({ children }) => <>{children}</>,
         }}
       >
         {report.full_markdown}

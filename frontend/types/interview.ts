@@ -1,4 +1,4 @@
-import type { WorkflowConfig } from "./workflow";
+import type { CompetitorGroups, WorkflowConfig } from "./workflow";
 
 export type InterviewMessageRole = "user" | "assistant";
 
@@ -17,6 +17,7 @@ export interface InterviewSSEMessage {
   token?: string;
   extracted_config?: Partial<WorkflowConfig>;
   suggested_competitors?: string[];
+  suggested_competitor_groups?: CompetitorGroups;
   is_complete?: boolean;
   response?: string;
 }

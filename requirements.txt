@@ -12,6 +12,7 @@ langsmith>=0.1.0
 # Data Validation & Config
 pydantic>=2.9.0
 pydantic-settings>=2.5.0
+email-validator>=2.0.0
 python-dotenv>=1.0.0
 
 # Database

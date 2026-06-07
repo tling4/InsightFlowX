@@ -56,6 +56,7 @@ class BaseAgent:
         task_name: str,
         *,
         request_meta: dict[str, Any] | None = None,
+        stream_response: bool = True,
     ) -> T:
         """调用 LLM 获取结构化输出，全程流式推送 token 到前端。
 
@@ -74,4 +75,9 @@ class BaseAgent:
         async def _on_token(token: str) -> None:
             await self.stream_llm_token(ctx, token)
 
-        return await invoke_json_model(system_prompt, user_payload, schema, stream_callback=_on_token)
+        return await invoke_json_model(
+            system_prompt,
+            user_payload,
+            schema,
+            stream_callback=_on_token if stream_response else None,
+        )

@@ -7,7 +7,13 @@ interface Props {
 }
 
 export function FeatureMatrixTable({ data }: Props) {
-  const products = Object.keys(data.matrix[0]?.products ?? {});
+  const visibleRows = data.matrix.filter((row) => {
+    if (!row.comparisons?.length) return true;
+    return row.comparisons.some(
+      (comparison) => !["", "unknown", "未确认"].includes(comparison.support_level?.trim().toLowerCase() ?? "")
+    );
+  });
+  const products = Object.keys(visibleRows[0]?.products ?? {});
 
   return (
     <Card>
@@ -27,7 +33,7 @@ export function FeatureMatrixTable({ data }: Props) {
             </tr>
           </thead>
           <tbody>
-            {data.matrix.map((row, i) => (
+            {visibleRows.map((row, i) => (
               <tr key={i} className="border-b border-[var(--border)] hover:bg-[var(--bg-elevated)]">
                 <td className="py-2 px-4 text-[var(--text-secondary)]">{row.feature_name}</td>
                 {products.map((p) => {

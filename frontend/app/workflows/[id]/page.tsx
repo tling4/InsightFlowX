@@ -29,14 +29,16 @@ import { SwotGrid } from "@/components/report/swot-grid";
 import { FeatureMatrixTable } from "@/components/report/feature-matrix-table";
 import { PricingTable } from "@/components/report/pricing-table";
 import { SentimentPanel } from "@/components/report/sentiment-panel";
+import { CompetitorRoleCard } from "@/components/report/competitor-role-card";
 import { RevisionTimeline } from "@/components/report/revision-timeline";
 import { Send, ArrowLeft, Layers, FileText, Sparkles, Pencil, MessageSquare, Network, Download, Printer } from "lucide-react";
 import Link from "next/link";
 import { statusLabel, statusColor } from "@/lib/utils";
 import type { InterviewMessage } from "@/types/interview";
-import type { WorkflowConfig, WorkflowDetail } from "@/types/workflow";
+import type { CompetitorGroups, WorkflowConfig, WorkflowDetail } from "@/types/workflow";
 import type { WorkflowEvent, AgentNodeName } from "@/types/event";
-import type { ReportOutput, SWOTAnalysis, FeatureMatrix, PricingComparison, UserSentimentAnalysis } from "@/types/artifact";
+import { AGENT_NODE_ORDER } from "@/types/event";
+import type { ReportOutput, SWOTAnalysis, FeatureMatrix, PricingComparison, UserSentimentAnalysis, CompetitorRoleAnalysis } from "@/types/artifact";
 
 const SHOW_DEBUG_EVENTS = process.env.NEXT_PUBLIC_ENABLE_DEBUG_EVENTS === "true";
 
@@ -218,6 +220,44 @@ function InterviewView({ workflowId, token, workflow }: { workflowId: string; to
 
   const canStart = Boolean(config.target_product && config.product_category);
 
+  const normalizeNames = useCallback((names: string[]) => {
+    const seen = new Set<string>();
+    return names.map((name) => name.trim()).filter((name) => {
+      const lowered = name.toLowerCase();
+      if (!name || seen.has(lowered)) return false;
+      seen.add(lowered);
+      return true;
+    });
+  }, []);
+
+  const flattenGroups = useCallback((groups?: Partial<CompetitorGroups> | null) => {
+    if (!groups) return [];
+    return normalizeNames([
+      ...(groups.core ?? []),
+      ...(groups.benchmark ?? []),
+      ...(groups.potential ?? []),
+      ...(groups.substitute ?? []),
+      ...(groups.pitfall ?? []),
+    ]);
+  }, [normalizeNames]);
+
+  const assignToGroups = useCallback((names: string[], existing?: Partial<CompetitorGroups> | null): CompetitorGroups => {
+    const groups: CompetitorGroups = {
+      core: [...(existing?.core ?? [])],
+      benchmark: [...(existing?.benchmark ?? [])],
+      potential: [...(existing?.potential ?? [])],
+      substitute: [...(existing?.substitute ?? [])],
+      pitfall: [...(existing?.pitfall ?? [])],
+    };
+    const used = new Set(flattenGroups(groups).map((name) => name.toLowerCase()));
+    for (const name of normalizeNames(names)) {
+      if (used.has(name.toLowerCase())) continue;
+      groups.core.push(name);
+      used.add(name.toLowerCase());
+    }
+    return groups;
+  }, [flattenGroups, normalizeNames]);
+
   const sendUserMessage = (text: string) => {
     if (!text.trim() || isStreaming) return;
     const userMsg: InterviewMessage = { role: "user", content: text, created_at: new Date().toISOString() };
@@ -238,18 +278,38 @@ function InterviewView({ workflowId, token, workflow }: { workflowId: string; to
       },
       (incoming) => {
         if (incoming.extracted_config) {
-          setConfig((prev) => ({ ...prev, ...incoming.extracted_config }));
+          setConfig((prev) => {
+            const merged = { ...prev, ...incoming.extracted_config };
+            const groups = assignToGroups(
+              merged.competitors ?? [],
+              incoming.extracted_config?.competitor_groups ?? merged.competitor_groups,
+            );
+            return { ...merged, competitor_groups: groups, competitors: flattenGroups(groups) };
+          });
         }
         const competitors = incoming.suggested_competitors;
         if (competitors && competitors.length > 0) {
-          setConfig((prev) => ({
-            ...prev,
-            competitors: [...new Set([...(prev.competitors ?? []), ...competitors])],
-          }));
+          setConfig((prev) => {
+            const groups = assignToGroups(competitors, incoming.suggested_competitor_groups ?? prev.competitor_groups);
+            return { ...prev, competitor_groups: groups, competitors: flattenGroups(groups) };
+          });
         }
       },
       () => { setIsComplete(true); },
-      (err) => console.error("Interview SSE error:", err)
+      (err) => {
+        console.error("Interview SSE error:", err);
+        setMessages((prev) => {
+          const updated = [...prev];
+          const last = updated[updated.length - 1];
+          const errorText = `回复失败：${err.message}`;
+          if (last?.role === "assistant" && !last.content) {
+            updated[updated.length - 1] = { ...last, content: errorText };
+          } else {
+            updated.push({ role: "assistant", content: errorText, created_at: new Date().toISOString() });
+          }
+          return updated;
+        });
+      }
     );
   };
 
@@ -355,12 +415,31 @@ function InterviewView({ workflowId, token, workflow }: { workflowId: string; to
           onNewCompetitorChange={setNewCompetitor}
           onAddCompetitor={() => {
             if (newCompetitor.trim()) {
-              setConfig((prev) => ({ ...prev, competitors: [...(prev.competitors ?? []), newCompetitor.trim()] }));
+              setConfig((prev) => {
+                const groups = assignToGroups([newCompetitor.trim()], prev.competitor_groups);
+                return { ...prev, competitor_groups: groups, competitors: flattenGroups(groups) };
+              });
               setNewCompetitor(""); clearStartError();
             }
           }}
-          onRemoveCompetitor={(name) => { setConfig((prev) => ({ ...prev, competitors: (prev.competitors ?? []).filter((c) => c !== name) })); clearStartError(); }}
-          onConfigChange={(field, value) => { setConfig((prev) => ({ ...prev, [field]: value })); clearStartError(); }}
+          onRemoveCompetitor={(name) => {
+            setConfig((prev) => {
+              const groups = Object.fromEntries(
+                Object.entries(prev.competitor_groups ?? {}).map(([key, values]) => [
+                  key,
+                  ((values ?? []) as string[]).filter((item: string) => item !== name),
+                ]),
+              ) as unknown as CompetitorGroups;
+              return { ...prev, competitor_groups: groups, competitors: flattenGroups(groups) };
+            });
+            clearStartError();
+          }}
+          onConfigChange={(field, value) => {
+            setConfig((prev) => field === "competitor_groups"
+              ? { ...prev, competitor_groups: value as CompetitorGroups, competitors: flattenGroups(value as CompetitorGroups) }
+              : { ...prev, [field]: value });
+            clearStartError();
+          }}
           onStart={handleStart} onResumeEditing={handleResumeEditing}
         />
       </div>
@@ -370,18 +449,20 @@ function InterviewView({ workflowId, token, workflow }: { workflowId: string; to
 
 /* ─── DAG Runtime View ─── */
 function DagRuntimeView({ workflowId, token, workflow }: { workflowId: string; token: string; workflow: WorkflowDetail }) {
+  const createEmptyNodeStates = (): Record<AgentNodeName, { status: NodeStatus; message?: string; duration_ms?: number }> =>
+    AGENT_NODE_ORDER.reduce((acc, node) => {
+      acc[node] = { status: "idle" };
+      return acc;
+    }, {} as Record<AgentNodeName, { status: NodeStatus; message?: string; duration_ms?: number }>);
+
   const qc = useQueryClient();
   const isPaused = workflow.status === "paused";
   const executionAttempt = workflow.execution_attempt;
   const [nodeStates, setNodeStates] = useState<
     Record<AgentNodeName, { status: NodeStatus; message?: string; duration_ms?: number }>
-  >({
-    information_collection: { status: "idle" },
-    analysis: { status: "idle" },
-    report_writing: { status: "idle" },
-    review: { status: "idle" },
-  });
+  >(createEmptyNodeStates);
   const [hasReroute, setHasReroute] = useState(false);
+  const [rerouteTarget, setRerouteTarget] = useState<AgentNodeName>("analysis");
   const { activeNode, selectedNode, entries, appendEvent, rebuildFromEvents, setSelectedNode } = useNodeStream();
   const [debugEvents, setDebugEvents] = useState<WorkflowEvent[]>([]);
   const [dialogInput, setDialogInput] = useState("");
@@ -491,6 +572,9 @@ function DagRuntimeView({ workflowId, token, workflow }: { workflowId: string; t
 
     if (e.event_type === "reroute") {
       setHasReroute(true);
+      const payload = e.payload as Record<string, unknown> | undefined;
+      const target = (payload?.to_node || payload?.target_node) as AgentNodeName | undefined;
+      if (target) setRerouteTarget(target);
     }
   }, [appendEvent, patchWorkflowCache]);
 
@@ -562,12 +646,7 @@ function DagRuntimeView({ workflowId, token, workflow }: { workflowId: string; t
         const events: WorkflowEvent[] = Array.isArray(body) ? body : (body?.items ?? []);
         if (events.length === 0) return;
         rebuildFromEvents(events);
-        const rebuilt: Record<AgentNodeName, { status: NodeStatus; message?: string; duration_ms?: number }> = {
-          information_collection: { status: "idle" },
-          analysis: { status: "idle" },
-          report_writing: { status: "idle" },
-          review: { status: "idle" },
-        };
+        const rebuilt = createEmptyNodeStates();
         let hadReroute = false;
         for (const e of [...events].sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0))) {
           const node = e.node_name as AgentNodeName;
@@ -592,12 +671,7 @@ function DagRuntimeView({ workflowId, token, workflow }: { workflowId: string; t
     const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000/api/v1";
 
     const rebuildNodeStatesFromEvents = (list: WorkflowEvent[]) => {
-      const rebuilt: Record<AgentNodeName, { status: NodeStatus; message?: string; duration_ms?: number }> = {
-        information_collection: { status: "idle" },
-        analysis: { status: "idle" },
-        report_writing: { status: "idle" },
-        review: { status: "idle" },
-      };
+      const rebuilt = createEmptyNodeStates();
       let reroute = false;
       let lastEventTime = 0;
       let hasLifecycleEvents = false;
@@ -718,7 +792,7 @@ function DagRuntimeView({ workflowId, token, workflow }: { workflowId: string; t
           <span className="text-sm font-medium text-[var(--text-primary)]">DAG Runtime Canvas</span>
         </div>
         <div className="flex-1 min-h-0">
-          <DagCanvas nodeStates={nodeStates} hasReroute={hasReroute} />
+          <DagCanvas nodeStates={nodeStates} hasReroute={hasReroute} rerouteTarget={rerouteTarget} />
         </div>
         {/* Stale workflow warning */}
         {recoveryState === "recovering" && (
@@ -901,7 +975,15 @@ function ReportView({ workflowId, workflowStatus, executionAttempt }: { workflow
   useEffect(() => {
     if (!artifactList || !token) return;
     const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000/api/v1";
-    const analysisTypes = ["feature_matrix", "pricing_comparison", "user_sentiment", "swot_analysis"];
+    const analysisTypes = [
+      "feature_matrix",
+      "pricing_comparison",
+      "user_sentiment",
+      "positioning_analysis",
+      "swot_analysis",
+      "competitor_role_analysis",
+      "gtm_analysis",
+    ];
     analysisTypes.forEach((type) => {
       const art = artifactList.find((a) => a.artifact_type === type);
       if (!art) return;
@@ -923,6 +1005,7 @@ function ReportView({ workflowId, workflowStatus, executionAttempt }: { workflow
   const featureMatrix = fullArtifacts.feature_matrix as FeatureMatrix | undefined;
   const pricingComparison = fullArtifacts.pricing_comparison as PricingComparison | undefined;
   const userSentiment = fullArtifacts.user_sentiment as UserSentimentAnalysis | undefined;
+  const competitorRoleAnalysis = fullArtifacts.competitor_role_analysis as CompetitorRoleAnalysis | undefined;
 
   const [revisions, setRevisions] = useState<Array<{ number: number; passed: boolean; targetNode?: string; score?: number }>>([]);
 
@@ -986,11 +1069,12 @@ function ReportView({ workflowId, workflowStatus, executionAttempt }: { workflow
             )}
           </div>
           <div ref={structuredRef} className="space-y-6">
+          {competitorRoleAnalysis && <div className="print-section"><CompetitorRoleCard data={competitorRoleAnalysis} /></div>}
           {swot && <div className="print-section"><SwotGrid swot={swot} /></div>}
           {featureMatrix && <div className="print-section"><FeatureMatrixTable data={featureMatrix} /></div>}
           {pricingComparison && <div className="print-section"><PricingTable data={pricingComparison} /></div>}
           {userSentiment && <div className="print-section"><SentimentPanel data={userSentiment} /></div>}
-          {!swot && !featureMatrix && !pricingComparison && !userSentiment && (
+          {!competitorRoleAnalysis && !swot && !featureMatrix && !pricingComparison && !userSentiment && (
             <div className="text-center text-[var(--text-muted)] py-12">加载分析数据中...</div>
           )}
           </div>

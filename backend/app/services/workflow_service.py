@@ -21,6 +21,22 @@ async def create_workflow(db: AsyncSession, owner_id: uuid.UUID, title: str) -> 
     return workflow
 
 
+async def update_workflow_title(
+    db: AsyncSession,
+    workflow_id: str,
+    owner_id: uuid.UUID,
+    title: str,
+) -> Workflow:
+    """更新工作流标题。"""
+    workflow = await get_workflow_by_id(db, workflow_id, owner_id)
+    if not workflow:
+        raise WorkflowNotFoundError(workflow_id)
+    workflow.title = title
+    await db.commit()
+    await db.refresh(workflow)
+    return workflow
+
+
 async def confirm_interview(db: AsyncSession, workflow_id: str, owner_id: uuid.UUID) -> Workflow:
     """确认访谈配置已完成。要求状态为 configuring 且已配置 target_product。"""
     workflow = await get_workflow_by_id(db, workflow_id, owner_id)

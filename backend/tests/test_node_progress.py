@@ -112,8 +112,63 @@ async def test_analysis_agent_emits_progress_messages():
     with patch("app.agents.analysis_agent.llm_is_configured", return_value=False):
         result = await agent.run(state, ctx)
 
+    assert result["swot"]["strengths"]
+    assert result["feature_matrix"] is None
+    assert agent.emit_progress.await_count >= 2
+
+
+@pytest.mark.asyncio
+async def test_feature_analysis_subnode_emits_progress_and_outputs_artifact():
+    agent = AnalysisAgent()
+    agent.emit_progress = AsyncMock()
+    ctx = _mock_ctx("feature_analysis")
+
+    state = {
+        "config": {
+            "target_product": "Notion",
+            "competitors": ["语雀"],
+            "focus_dimensions": ["功能", "定价"],
+        },
+        "raw_data": {
+            "Notion": [{"title": "Notion 定价", "url": "https://example.com/notion"}],
+            "语雀": [{"title": "语雀 功能", "url": "https://example.com/yuque"}],
+        },
+    }
+
+    with patch("app.agents.analysis_agent.llm_is_configured", return_value=False):
+        result = await agent.run(state, ctx)
+
     assert result["feature_matrix"]["matrix"]
     assert agent.emit_progress.await_count >= 2
+
+
+@pytest.mark.asyncio
+async def test_feature_analysis_subnode_retries_instead_of_saving_invalid_fallback():
+    agent = AnalysisAgent()
+    agent.emit_progress = AsyncMock()
+    agent._invoke_subnode_llm = AsyncMock(side_effect=ValueError("invalid structured output"))
+    ctx = _mock_ctx("feature_analysis")
+
+    state = {
+        "config": {
+            "target_product": "支付宝",
+            "competitors": ["微信支付"],
+            "focus_dimensions": ["手续费策略"],
+        },
+        "raw_data": {
+            "支付宝": [{"title": "支付宝手续费", "url": "https://example.com/alipay"}],
+            "微信支付": [{"title": "微信支付手续费", "url": "https://example.com/wechat"}],
+        },
+    }
+
+    with patch("app.agents.analysis_agent.llm_is_configured", return_value=True):
+        with pytest.raises(ValueError, match="invalid structured output"):
+            await agent.run(state, ctx)
+
+    assert not any(
+        call.kwargs.get("stage") == "subnode_complete"
+        for call in agent.emit_progress.await_args_list
+    )
 
 
 @pytest.mark.asyncio

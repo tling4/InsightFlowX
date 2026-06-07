@@ -2,10 +2,17 @@
 
 import { useEffect, useMemo, useRef } from "react";
 import type { AgentNodeName, NodeProgressEntry } from "@/types/event";
+import { AGENT_NODE_ORDER } from "@/types/event";
 
 const NODE_LABELS: Record<AgentNodeName, string> = {
   information_collection: "CollectionAgent",
   analysis: "AnalysisAgent",
+  feature_analysis: "FeatureAnalysis",
+  pricing_analysis: "PricingAnalysis",
+  sentiment_analysis: "SentimentAnalysis",
+  positioning_analysis: "PositioningAnalysis",
+  role_analysis: "RoleAnalysis",
+  gtm_analysis: "GTMAnalysis",
   report_writing: "ReportAgent",
   review: "ReviewAgent",
 };
@@ -34,12 +41,7 @@ export function StreamPanel({ activeNode, selectedNode, entries, onSelectNode }:
   }, [selectedNode, entries]);
 
   const orderedNodes = useMemo(
-    () => ([
-      "information_collection",
-      "analysis",
-      "report_writing",
-      "review",
-    ] as const),
+    () => AGENT_NODE_ORDER,
     [],
   );
 

@@ -15,13 +15,12 @@
 
 import logging
 from typing import Any
-from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
-from langgraph.checkpoint.postgres import dict_row
+
 from app.config import get_settings
 
 logger = logging.getLogger(__name__)
 
-_saver: AsyncPostgresSaver | None = None
+_saver: Any | None = None
 _conn: Any | None = None
 
 
@@ -35,11 +34,26 @@ async def init_checkpointer() -> None:
         RuntimeError: 如果未安装 psycopg
     """
     global _saver, _conn
+
+    settings = get_settings()
+    if not (
+        settings.DATABASE_URL_SYNC.startswith("postgresql://")
+        or settings.DATABASE_URL_SYNC.startswith("postgres://")
+    ):
+        _saver = None
+        _conn = None
+        logger.info("Postgres checkpointer disabled (DATABASE_URL_SYNC is not PostgreSQL)")
+        return
     try:
         import psycopg
     except ModuleNotFoundError as exc:
         raise RuntimeError("psycopg is required to initialize the Postgres checkpointer") from exc
-    settings = get_settings()
+
+    try:
+        from langgraph.checkpoint.postgres import dict_row
+        from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+    except Exception as exc:
+        raise RuntimeError("langgraph-checkpoint-postgres is required to initialize the Postgres checkpointer") from exc
     _conn = await psycopg.AsyncConnection.connect(
         settings.DATABASE_URL_SYNC,
         autocommit=True,
@@ -51,7 +65,7 @@ async def init_checkpointer() -> None:
     logger.info("Postgres checkpointer initialized")
 
 
-async def get_checkpointer() -> AsyncPostgresSaver:
+async def get_checkpointer() -> Any:
     """获取已初始化的检查点保存器实例。
 
     Returns:

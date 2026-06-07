@@ -430,7 +430,7 @@ async def resume_workflow(workflow_id: uuid.UUID, decision: DecisionRequest, eng
             logger.error("工作流 %s 没有可恢复 run", workflow_id)
             return
 
-        decision_payload = decision.model_dump(mode="json")
+        decision_payload = decision.model_dump(mode="json", exclude_none=True)
         await resolve_pause(db, workflow, run, decision_payload)
         workflow.status = "running"
         workflow.pause_state = None

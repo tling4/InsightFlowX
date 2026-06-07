@@ -21,7 +21,18 @@ def test_competitive_template_declares_business_nodes_and_gate_nodes():
 
     assert isinstance(template, GraphTemplate)
     assert template.entrypoint == "information_collection"
-    assert template.node_ids == ("information_collection", "analysis", "report_writing", "review")
+    assert template.node_ids == (
+        "information_collection",
+        "analysis",
+        "feature_analysis",
+        "pricing_analysis",
+        "sentiment_analysis",
+        "positioning_analysis",
+        "role_analysis",
+        "gtm_analysis",
+        "report_writing",
+        "review",
+    )
     assert template.node("review").gate_id == "review__gate"
 
 

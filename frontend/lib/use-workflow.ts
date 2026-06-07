@@ -42,6 +42,38 @@ export function useCreateWorkflow() {
   });
 }
 
+export function useUpdateWorkflowTitle() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, title }: { id: string; title: string }) => {
+      const res = await api.patch(`/workflows/${id}`, { title });
+      return res.data;
+    },
+    onMutate: async ({ id, title }) => {
+      const workflowKey = ["workflow", id] as const;
+      const previousWorkflow = qc.getQueryData<WorkflowDetail>(workflowKey);
+      const previousWorkflows = qc.getQueryData<WorkflowListItem[]>(["workflows"]);
+
+      qc.setQueryData<WorkflowDetail | undefined>(workflowKey, (current) => (
+        current ? { ...current, title } : current
+      ));
+      qc.setQueryData<WorkflowListItem[] | undefined>(["workflows"], (current) => (
+        current?.map((item) => (item.id === id ? { ...item, title } : item))
+      ));
+
+      return { previousWorkflow, previousWorkflows };
+    },
+    onError: (_error, { id }, context) => {
+      qc.setQueryData(["workflow", id], context?.previousWorkflow);
+      qc.setQueryData(["workflows"], context?.previousWorkflows);
+    },
+    onSuccess: (_data, { id }) => {
+      qc.invalidateQueries({ queryKey: ["workflow", id] });
+      qc.invalidateQueries({ queryKey: ["workflows"] });
+    },
+  });
+}
+
 export function useDeleteWorkflow() {
   const qc = useQueryClient();
   return useMutation({

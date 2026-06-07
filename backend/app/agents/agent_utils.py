@@ -79,6 +79,73 @@ def extract_json_object(text: str) -> dict[str, Any]:
     raise ValueError("LLM response did not contain a valid JSON object")
 
 
+def _normalize_schema_payload(data: dict[str, Any], schema: type[T]) -> dict[str, Any]:
+    """兼容 LLM 将结果额外包在 schema 名外层的情况。
+
+    常见坏格式：
+    {
+      "FeatureMatrix": {
+        "dimensions": [...],
+        "matrix": [...]
+      }
+    }
+    或模型误把对象包成单元素数组：
+    {
+      "feature_matrix": [{
+        "dimensions": [...],
+        "matrix": [...]
+      }]
+    }
+
+    Pydantic 期望的是最外层直接为字段对象，因此这里做一层保守解包。
+    只有在：
+    - 顶层 dict 只有一个 key
+    - 且该 key 与 schema 名大小写无关地匹配
+    - 且 value 是 dict，或仅包含一个 dict 的 list
+    时才会解包，避免误伤正常数据。
+    """
+    normalized = _normalize_evidence_refs(data)
+    if not isinstance(normalized, dict) or len(normalized) != 1:
+        return normalized
+    [(top_key, inner_value)] = list(normalized.items())
+
+    normalized_key = re.sub(r"[^a-z0-9]+", "", str(top_key).lower())
+    schema_name = re.sub(r"[^a-z0-9]+", "", schema.__name__.lower())
+    if normalized_key != schema_name:
+        return normalized
+    if isinstance(inner_value, dict):
+        return inner_value
+    if (
+        isinstance(inner_value, list)
+        and len(inner_value) == 1
+        and isinstance(inner_value[0], dict)
+    ):
+        return inner_value[0]
+    return normalized
+
+
+def _normalize_evidence_refs(value: Any) -> Any:
+    """Recursively expand URL-only evidence_refs before schema validation."""
+    if isinstance(value, list):
+        return [_normalize_evidence_refs(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+
+    normalized = {
+        key: _normalize_evidence_refs(item)
+        for key, item in value.items()
+    }
+    refs = normalized.get("evidence_refs")
+    if isinstance(refs, list):
+        normalized["evidence_refs"] = [
+            {"url": ref, "title": ref}
+            if isinstance(ref, str)
+            else ref
+            for ref in refs
+        ]
+    return normalized
+
+
 def _schema_repair_prompt(
     *,
     system_prompt: str,
@@ -88,6 +155,7 @@ def _schema_repair_prompt(
     error_message: str,
 ) -> list[tuple[str, str]]:
     """Build a compact repair prompt for malformed structured outputs."""
+    compact_invalid_output = raw_content[:12000]
     return [
         (
             "system",
@@ -103,7 +171,7 @@ def _schema_repair_prompt(
                 {
                     "original_input": user_payload,
                     "expected_schema": schema.model_json_schema(),
-                    "invalid_output": raw_content,
+                    "invalid_output": compact_invalid_output,
                     "validation_error": error_message,
                     "repair_rules": [
                         "只返回 JSON 对象本体",
@@ -162,7 +230,7 @@ async def invoke_json_model(
 
     content = await _invoke(messages, stream_callback is not None)
     try:
-        data = extract_json_object(content)
+        data = _normalize_schema_payload(extract_json_object(content), schema)
         return schema.model_validate(data)
     except Exception as first_error:
         repair_messages = _schema_repair_prompt(
@@ -177,7 +245,7 @@ async def invoke_json_model(
         if isinstance(repair_content, list):
             repair_content = "".join(part.get("text", "") for part in repair_content if isinstance(part, dict))
         try:
-            repaired = extract_json_object(str(repair_content))
+            repaired = _normalize_schema_payload(extract_json_object(str(repair_content)), schema)
             return schema.model_validate(repaired)
         except Exception as second_error:
             raise ValueError(
@@ -196,26 +264,48 @@ def truncate_text(text: str, limit: int = 1200) -> str:
     return text[:limit - 3] + "..."
 
 
-def raw_data_to_context(raw_data: dict[str, list], max_items_per_product: int = 5) -> dict[str, list[dict[str, Any]]]:
+def raw_data_to_context(raw_data: dict[str, list], max_items_per_product: int = 8) -> dict[str, list[dict[str, Any]]]:
     """将原始搜索结果转换为 LLM 友好的上下文格式。
 
     做三件事：
-    1. 每产品最多取 max_items_per_product 条（控制 token 消耗）
-    2. 只保留 LLM 需要的字段：title、url、snippet、relevance_score
+    1. 每产品最多取 max_items_per_product 条，并优先覆盖不同搜索意图
+    2. 只保留 LLM 需要的字段和来源对应的搜索意图
     3. 对 title 和 snippet 做截断，防止单条超长来源撑爆 prompt
     """
     context: dict[str, list[dict[str, Any]]] = {}
     for product, items in raw_data.items():
         context[product] = []
-        for item in items[:max_items_per_product]:
-            if isinstance(item, BaseModel):
-                item = item.model_dump(mode="json")
-            if not isinstance(item, dict):
-                continue
+        normalized_items = [
+            item.model_dump(mode="json") if isinstance(item, BaseModel) else item
+            for item in items
+        ]
+        valid_items = [item for item in normalized_items if isinstance(item, dict)]
+        selected: list[dict[str, Any]] = []
+        selected_ids: set[int] = set()
+        seen_intents: set[str] = set()
+        for index, item in enumerate(valid_items):
+            intents = item.get("source_intents") or [item.get("source_intent")]
+            intents = [str(intent) for intent in intents if intent]
+            if any(intent not in seen_intents for intent in intents):
+                selected.append(item)
+                selected_ids.add(index)
+                seen_intents.update(intents)
+            if len(selected) >= max_items_per_product:
+                break
+        if len(selected) < max_items_per_product:
+            selected.extend(
+                item
+                for index, item in enumerate(valid_items)
+                if index not in selected_ids
+            )
+
+        for item in selected[:max_items_per_product]:
             context[product].append({
                 "title": truncate_text(item.get("title", ""), 160),
                 "url": item.get("url", ""),
                 "snippet": truncate_text(item.get("snippet") or item.get("content_summary") or "", 800),
+                "source_intent": item.get("source_intent", ""),
+                "source_intents": item.get("source_intents", []),
                 "relevance_score": item.get("relevance_score", 0),
             })
     return context

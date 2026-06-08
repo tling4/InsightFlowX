@@ -18,6 +18,7 @@ export interface InterviewSSEMessage {
   extracted_config?: Partial<WorkflowConfig>;
   suggested_competitors?: string[];
   suggested_competitor_groups?: CompetitorGroups;
+  workflow_title?: string;
   is_complete?: boolean;
   response?: string;
 }

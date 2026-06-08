@@ -40,6 +40,7 @@ export interface CompetitorGroups {
 
 export interface WorkflowConfig {
   target_product: string;
+  target_product_status: "launched" | "pre_launch" | "no_product";
   product_category: ProductCategory;
   product_profile?: ProductProfile | null;
   focus_dimensions: string[];

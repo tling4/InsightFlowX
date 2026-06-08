@@ -7,6 +7,7 @@ from app.core.runtime.policies import ReviewFailPausePolicy
 from app.core.runtime.context import AgentContext
 from app.schemas.event import EventType
 from app.schemas.review import ReviewCheck, ReviewOutput
+from app.schemas.workflow import target_product_is_launched
 
 
 REVIEW_SYSTEM_PROMPT = """你是竞品分析报告质检员。请审查输入报告和中间产物是否足以交付给用户。
@@ -28,6 +29,7 @@ REVIEW_SYSTEM_PROMPT = """你是竞品分析报告质检员。请审查输入报
   - retry_scope 用于标记优先重做的分析模块，例如 pricing_analysis、role_analysis。
 - competitors 必须是明确产品/品牌/服务实体，不能是品类词、用户自然语言片段、媒体站、文章标题或泛化描述。
 - 每个有效竞品都应有对应来源覆盖；有效竞品不足时必须不通过并回退 information_collection。
+- 目标产品未上线或暂无自有产品时，不要求目标产品具备公开来源。
 JSON schema:
 {
   "passed": true,
@@ -576,7 +578,11 @@ class ReviewAgent(BaseAgent):
         has_resolution_error = bool(resolution_error)
         valid = valid_count >= minimum_competitors and not invalid and not has_resolution_error
 
-        products_to_check = [product for product in [target, *competitors] if product]
+        products_to_check = [
+            product
+            for product in ([target] if target_product_is_launched(config) else []) + competitors
+            if product
+        ]
         missing_sources = [
             product for product in products_to_check
             if not isinstance(raw_data.get(product), list) or len(raw_data.get(product, [])) == 0
@@ -603,7 +609,11 @@ class ReviewAgent(BaseAgent):
         elif missing_sources:
             coverage_detail = "以下竞品证据不足但已允许继续：" + "，".join(missing_sources)
         else:
-            coverage_detail = "目标产品与竞品均有来源覆盖"
+            coverage_detail = (
+                "目标产品与竞品均有来源覆盖"
+                if target_product_is_launched(config)
+                else "所有竞品均有来源覆盖；未上线目标产品不参与来源覆盖校验"
+            )
 
         return {
             "valid": valid,

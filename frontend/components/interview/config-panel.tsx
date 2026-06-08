@@ -118,6 +118,29 @@ export function ConfigPanel({
           </div>
         </FieldSection>
 
+        <FieldSection label="目标产品状态" collapsed={collapsed.productStatus} onToggle={() => toggle("productStatus")}>
+          <div className="flex gap-1.5 flex-wrap">
+            {PRODUCT_STATUS_OPTIONS.map((option) => (
+              <button
+                key={option.value}
+                onClick={() => onConfigChange("target_product_status", option.value)}
+                className={`px-3 py-1.5 rounded-lg text-xs border transition-all ${
+                  (config.target_product_status ?? "launched") === option.value
+                    ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-400"
+                    : "border-[var(--border)] text-[var(--text-muted)] hover:border-[var(--text-secondary)]"
+                }`}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+          {config.target_product_status && config.target_product_status !== "launched" && (
+            <p className="mt-2 text-[11px] text-amber-400/80">
+              功能对比、定价对比和用户情感分析将只展示竞品。
+            </p>
+          )}
+        </FieldSection>
+
         <FieldSection label="产品画像" collapsed={collapsed.profile} onToggle={() => toggle("profile")}>
           <div className="space-y-2">
             <div className="grid grid-cols-2 gap-2">
@@ -346,6 +369,12 @@ const PRODUCT_CATEGORIES = [
   "硬件 / 消费电子",
   "平台 / 社区 / 内容",
   "电商 / 零售 / 本地生活",
+] as const;
+
+const PRODUCT_STATUS_OPTIONS = [
+  { value: "launched", label: "已有产品且已上线" },
+  { value: "pre_launch", label: "已有名称但未上线" },
+  { value: "no_product", label: "暂无自己的产品" },
 ] as const;
 
 function ProfileInput({

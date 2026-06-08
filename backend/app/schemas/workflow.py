@@ -23,6 +23,43 @@ class ProductCategory(str, Enum):
     LEGACY_HARDWARE = "硬件产品"
 
 
+class TargetProductStatus(str, Enum):
+    LAUNCHED = "launched"
+    PRE_LAUNCH = "pre_launch"
+    NO_PRODUCT = "no_product"
+
+
+UNLAUNCHED_PRODUCT_MARKERS = (
+    "自研",
+    "未上线",
+    "尚未上线",
+    "还没上线",
+    "规划中",
+    "筹备中",
+    "概念产品",
+    "暂无产品",
+    "没有自己的产品",
+    "还没有自己的产品",
+)
+
+
+def target_product_is_launched(config: dict | None) -> bool:
+    """Return whether the target can participate in evidence-based comparisons."""
+    if not isinstance(config, dict):
+        return True
+    status = config.get("target_product_status")
+    if status:
+        return status == TargetProductStatus.LAUNCHED.value
+    profile = config.get("product_profile") if isinstance(config.get("product_profile"), dict) else {}
+    text = " ".join(str(value) for value in (
+        config.get("target_product", ""),
+        config.get("extra_requirements", ""),
+        profile.get("canonical_name", ""),
+        profile.get("market_segment", ""),
+    ))
+    return not any(marker in text for marker in UNLAUNCHED_PRODUCT_MARKERS)
+
+
 class WorkflowCreate(BaseModel):
     title: str = Field(..., min_length=1, max_length=255, description="工作流标题")
 
@@ -133,6 +170,10 @@ def remove_competitors_from_groups(
 
 class WorkflowConfig(BaseModel):
     target_product: str = Field(..., description="目标分析产品名称")
+    target_product_status: TargetProductStatus = Field(
+        default=TargetProductStatus.LAUNCHED,
+        description="目标产品状态；未上线或暂无自有产品时不参与功能、定价与用户情感对比",
+    )
     product_category: ProductCategory = Field(..., description="产品品类")
     product_profile: ProductProfile | None = Field(default=None, description="系统识别出的可编辑产品画像")
     focus_dimensions: list[str] = Field(default_factory=lambda: list(DEFAULT_FOCUS_DIMENSIONS), description="系统推断的默认分析维度")
@@ -142,6 +183,18 @@ class WorkflowConfig(BaseModel):
     insufficient_evidence_competitors: list[str] = Field(default_factory=list, description="允许证据不足但继续分析的竞品")
     language: str = Field(default="zh", description="报告语言")
     extra_requirements: str = Field(default="", description="用户额外需求")
+
+    @model_validator(mode="before")
+    @classmethod
+    def infer_legacy_target_product_status(cls, data):
+        if isinstance(data, dict) and not data.get("target_product_status"):
+            data = dict(data)
+            data["target_product_status"] = (
+                TargetProductStatus.LAUNCHED.value
+                if target_product_is_launched(data)
+                else TargetProductStatus.PRE_LAUNCH.value
+            )
+        return data
 
     @model_validator(mode="after")
     def sync_competitor_fields(self):

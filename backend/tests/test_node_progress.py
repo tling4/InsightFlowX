@@ -13,6 +13,7 @@ from app.core.competitive_template import CompetitiveAnalysisTemplate
 from app.core.runtime.context import AgentContext, EventSink
 from app.core.runtime.policies import ReviewFailPausePolicy
 from app.schemas.event import EventType
+from app.schemas.pricing import PricingComparison
 
 
 class DummyAgent(BaseAgent):
@@ -66,6 +67,33 @@ async def test_emit_progress_logs_and_broadcasts():
     assert payload["event_type"] == EventType.NODE_PROGRESS.value
     assert payload["payload"]["stage"] == "prepare_context"
     assert payload["payload"]["message"] == "正在整理来源上下文。"
+
+
+@pytest.mark.asyncio
+async def test_structured_llm_none_response_falls_back_to_json_repair_path():
+    agent = DummyAgent()
+    ctx = _mock_ctx("pricing_analysis")
+    fallback_result = PricingComparison(plans=[], summary="暂无公开定价")
+
+    with (
+        patch("app.agents.base_agent.invoke_structured_model", new=AsyncMock(return_value=None)) as structured,
+        patch("app.agents.base_agent.invoke_json_model", new=AsyncMock(return_value=fallback_result)) as json_model,
+    ):
+        result = await agent.invoke_structured_llm(
+            "system",
+            {"target_product": "支付宝"},
+            PricingComparison,
+            ctx,
+            "pricing_analysis",
+            request_meta={"products": ["支付宝"]},
+        )
+
+    assert result == fallback_result
+    structured.assert_awaited_once()
+    json_model.assert_awaited_once()
+    assert ctx.events.emit.await_count == 1
+    assert ctx.events.emit.await_args.args[0] == EventType.LLM_REQUEST
+    assert ctx.events.progress.await_args.kwargs["stage"] == "structured_output_fallback"
 
 
 @pytest.mark.asyncio

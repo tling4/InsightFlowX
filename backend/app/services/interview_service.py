@@ -14,6 +14,7 @@ from app.agents.interview_agent import InterviewAgent
 from app.agents.competitor_resolver import resolve_competitors
 from app.agents.product_profiler import build_product_profile
 from app.schemas.workflow import ProductProfile, assign_competitor_groups, dedupe_competitor_names
+from app.services.workflow_service import apply_auto_workflow_title
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -236,6 +237,7 @@ async def stream_interview_response(
                 config.product_profile,
             )
             merge_competitor_groups(config, config.competitors)
+            apply_auto_workflow_title(workflow, config)
             workflow.config = config.model_dump()
             await db.commit()
 
@@ -262,5 +264,6 @@ async def stream_interview_response(
         "extracted_config": config.model_dump() if config else None,
         "suggested_competitors": config.competitors if config else [],
         "suggested_competitor_groups": config.competitor_groups.model_dump() if config else None,
+        "workflow_title": workflow.title if config and workflow else None,
     }
     yield json.dumps(meta, ensure_ascii=False)

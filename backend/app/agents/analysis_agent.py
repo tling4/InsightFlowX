@@ -15,6 +15,7 @@ from app.schemas.positioning import PositioningAnalysis, PositioningDimension
 from app.schemas.pricing import PricingComparison
 from app.schemas.sentiment import UserSentimentAnalysis
 from app.schemas.swot import SWOTAnalysis
+from app.schemas.workflow import target_product_is_launched
 
 
 class AnalysisBundle(BaseModel):
@@ -199,7 +200,7 @@ class AnalysisAgent(BaseAgent):
                 level="warning",
             )
             _, _, _, _, swot, _, _ = self._fallback_analysis(
-                target, competitors, focus_dimensions, raw_data, competitor_groups
+                target, competitors, focus_dimensions, raw_data, competitor_groups, products
             )
 
         merged_outputs = self._merge_outputs(previous_outputs, {"swot": swot.model_dump(mode="json")}, {"swot"})
@@ -298,7 +299,15 @@ class AnalysisAgent(BaseAgent):
             )
             generated = await self._invoke_subnode_llm(ctx, payload, products, competitors, competitor_groups)
         else:
-            generated = self._fallback_artifact(artifact_key, target, competitors, focus_dimensions, raw_data, competitor_groups)
+            generated = self._fallback_artifact(
+                artifact_key,
+                target,
+                competitors,
+                focus_dimensions,
+                raw_data,
+                competitor_groups,
+                products,
+            )
 
         merged_outputs = self._merge_outputs(previous_outputs, {artifact_key: generated}, {artifact_key})
         duration_ms = int((time.time() - start) * 1000)
@@ -393,15 +402,17 @@ class AnalysisAgent(BaseAgent):
             ["目标用户", "使用场景", "核心问题", "解决方案", "支撑点", "用户反馈", "上市与增长"],
         )
         raw_data = state.get("raw_data", {}) or {}
+        include_target = target_product_is_launched(config)
         if isinstance(raw_data, dict):
             collected_products = [product for product, items in raw_data.items() if product and isinstance(items, list)]
             competitors = [product for product in competitors if product in raw_data]
-            if target and target not in raw_data:
+            if include_target and target and target not in raw_data:
                 collected_products = [target, *collected_products]
-            products = [p for p in [target, *competitors] if p and p in collected_products]
+            candidates = ([target] if include_target else []) + competitors
+            products = [p for p in candidates if p and p in collected_products]
         else:
             raw_data = {}
-            products = [p for p in [target, *competitors] if p]
+            products = [p for p in ([target] if include_target else []) + competitors if p]
         return config, target, competitors, competitor_groups, focus_dimensions, raw_data, products
 
     def _llm_payload(
@@ -437,20 +448,20 @@ class AnalysisAgent(BaseAgent):
         if node_id == "feature_analysis":
             return await self._invoke_feature_matrix_by_dimension(ctx, payload, products)
         if node_id == "pricing_analysis":
-            result = await self.invoke_llm(PRICING_SYSTEM_PROMPT, payload, PricingComparison, ctx, node_id, request_meta={"products": products})
+            result = await self.invoke_structured_llm(PRICING_SYSTEM_PROMPT, payload, PricingComparison, ctx, node_id, request_meta={"products": products})
             return self._restrict_pricing_to_products(result, products).model_dump(mode="json")
         if node_id == "sentiment_analysis":
-            result = await self.invoke_llm(SENTIMENT_SYSTEM_PROMPT, payload, UserSentimentAnalysis, ctx, node_id, request_meta={"products": products})
+            result = await self.invoke_structured_llm(SENTIMENT_SYSTEM_PROMPT, payload, UserSentimentAnalysis, ctx, node_id, request_meta={"products": products})
             return self._restrict_sentiment_to_products(result, products).model_dump(mode="json")
         if node_id == "positioning_analysis":
-            result = await self.invoke_llm(POSITIONING_SYSTEM_PROMPT, payload, PositioningAnalysis, ctx, node_id, request_meta={"products": products})
+            result = await self.invoke_structured_llm(POSITIONING_SYSTEM_PROMPT, payload, PositioningAnalysis, ctx, node_id, request_meta={"products": products})
             return result.model_dump(mode="json")
         if node_id == "role_analysis":
-            result = await self.invoke_llm(ROLE_SYSTEM_PROMPT, payload, CompetitorRoleAnalysis, ctx, node_id, request_meta={"products": competitors})
+            result = await self.invoke_structured_llm(ROLE_SYSTEM_PROMPT, payload, CompetitorRoleAnalysis, ctx, node_id, request_meta={"products": competitors})
             return self._restrict_role_analysis(result, competitors, competitor_groups).model_dump(mode="json")
         if node_id == "gtm_analysis":
             try:
-                result = await self.invoke_llm(GTM_SYSTEM_PROMPT, payload, GTMAnalysis, ctx, node_id, request_meta={"products": products})
+                result = await self.invoke_structured_llm(GTM_SYSTEM_PROMPT, payload, GTMAnalysis, ctx, node_id, request_meta={"products": products})
                 return result.model_dump(mode="json")
             except Exception as exc:
                 await self.emit_progress(
@@ -466,6 +477,7 @@ class AnalysisAgent(BaseAgent):
                     self._feature_dimensions(payload.get("focus_dimensions")),
                     payload.get("sources_by_product") if isinstance(payload.get("sources_by_product"), dict) else {},
                     competitor_groups,
+                    products,
                 )
         raise ValueError(f"Unsupported analysis subnode: {node_id}")
 
@@ -657,9 +669,10 @@ class AnalysisAgent(BaseAgent):
         focus_dimensions: list[str],
         raw_data: dict,
         competitor_groups: dict,
+        products: list[str] | None = None,
     ) -> dict:
         feature_matrix, pricing_comparison, user_sentiment, positioning_analysis, swot, competitor_role_analysis, gtm_analysis = self._fallback_analysis(
-            target, competitors, focus_dimensions, raw_data, competitor_groups
+            target, competitors, focus_dimensions, raw_data, competitor_groups, products
         )
         fallback_outputs = {
             "feature_matrix": feature_matrix.model_dump(mode="json"),
@@ -821,10 +834,11 @@ class AnalysisAgent(BaseAgent):
         focus_dimensions: list[str],
         raw_data: dict,
         competitor_groups: dict,
+        comparison_products: list[str] | None = None,
     ) -> tuple[FeatureMatrix, PricingComparison, UserSentimentAnalysis, PositioningAnalysis, SWOTAnalysis, CompetitorRoleAnalysis, GTMAnalysis]:
-        products = [p for p in [target, *competitors] if p]
+        products = comparison_products if comparison_products is not None else [p for p in [target, *competitors] if p]
         if not products:
-            products = ["目标产品"]
+            products = [p for p in competitors if p]
 
         matrix = []
         for dimension in focus_dimensions or ["功能", "定价", "用户评价", "市场定位"]:

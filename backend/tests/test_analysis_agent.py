@@ -4,10 +4,66 @@ from unittest.mock import AsyncMock
 import pytest
 
 from app.agents.analysis_agent import AnalysisAgent
+from app.schemas.competitor_role import CompetitorRoleAnalysis
 from app.schemas.feature import FeatureItem, FeatureMatrix
 from app.schemas.gtm import GTMAnalysis
+from app.schemas.positioning import PositioningAnalysis
 from app.schemas.pricing import PricingComparison
 from app.schemas.sentiment import UserSentimentAnalysis
+from app.schemas.workflow import target_product_is_launched
+
+
+def test_unlaunched_target_is_excluded_from_comparison_products():
+    agent = AnalysisAgent()
+    state = {
+        "config": {
+            "target_product": "自研导购产品",
+            "target_product_status": "pre_launch",
+            "competitors": ["返利网"],
+        },
+        "raw_data": {
+            "自研导购产品": [{"url": "https://example.com/internal"}],
+            "返利网": [{"url": "https://example.com/fanli"}],
+        },
+    }
+
+    _, target, competitors, _, _, _, products = agent._analysis_inputs(state)
+    feature, pricing, sentiment, *_ = agent._fallback_analysis(
+        target,
+        competitors,
+        ["核心功能"],
+        state["raw_data"],
+        {},
+        products,
+    )
+
+    assert products == ["返利网"]
+    assert [comparison.product for comparison in feature.matrix[0].comparisons] == ["返利网"]
+    assert [plan.product for plan in pricing.plans] == ["返利网"]
+    assert set(sentiment.per_product) == {"返利网"}
+
+
+def test_launched_target_remains_in_comparison_products():
+    agent = AnalysisAgent()
+    state = {
+        "config": {
+            "target_product": "支付宝",
+            "target_product_status": "launched",
+            "competitors": ["微信支付"],
+        },
+        "raw_data": {"支付宝": [], "微信支付": []},
+    }
+
+    *_, products = agent._analysis_inputs(state)
+
+    assert products == ["支付宝", "微信支付"]
+
+
+def test_legacy_self_developed_target_is_treated_as_unlaunched():
+    assert target_product_is_launched({
+        "target_product": "自研导购类产品",
+        "extra_requirements": "用于制定产品上线前增长策略",
+    }) is False
 
 
 def test_analysis_outputs_are_restricted_to_collected_products():
@@ -174,6 +230,7 @@ def test_sources_for_feature_dimension_prefers_matching_intent():
 async def test_feature_matrix_is_generated_one_dimension_at_a_time():
     agent = AnalysisAgent()
     agent.emit_progress = AsyncMock()
+    agent.invoke_structured_llm = AsyncMock(side_effect=AssertionError("feature analysis must use the repairable JSON path"))
     agent.invoke_llm = AsyncMock(side_effect=[
         FeatureItem.model_validate({
             "feature_name": "功能",
@@ -214,6 +271,51 @@ async def test_feature_matrix_is_generated_one_dimension_at_a_time():
     assert [item["feature_name"] for item in result["matrix"]] == ["功能", "定价"]
     assert agent.invoke_llm.await_args_list[0].args[1]["requested_dimension"] == "功能"
     assert agent.invoke_llm.await_args_list[1].args[1]["requested_dimension"] == "定价"
+    agent.invoke_structured_llm.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_non_feature_analysis_subnodes_use_structured_llm():
+    agent = AnalysisAgent()
+    agent.invoke_llm = AsyncMock(side_effect=AssertionError("free-form LLM path must not be used"))
+    payload = {
+        "target_product": "支付宝",
+        "focus_dimensions": ["手续费策略"],
+        "sources_by_product": {},
+    }
+    products = ["支付宝", "微信支付"]
+    competitors = ["微信支付"]
+    cases = [
+        ("pricing_analysis", PricingComparison(plans=[], summary="暂无公开定价"), PricingComparison),
+        (
+            "sentiment_analysis",
+            UserSentimentAnalysis(
+                per_product={product: {"neutral": 1} for product in products},
+                common_praises=[],
+                common_complaints=[],
+            ),
+            UserSentimentAnalysis,
+        ),
+        ("positioning_analysis", PositioningAnalysis(), PositioningAnalysis),
+        ("role_analysis", CompetitorRoleAnalysis(), CompetitorRoleAnalysis),
+        ("gtm_analysis", GTMAnalysis(), GTMAnalysis),
+    ]
+
+    for node_id, response, expected_schema in cases:
+        agent.invoke_structured_llm = AsyncMock(return_value=response)
+
+        await agent._invoke_subnode_llm(
+            SimpleNamespace(node_id=node_id),
+            payload,
+            products,
+            competitors,
+            {"core": competitors},
+        )
+
+        assert agent.invoke_structured_llm.await_count == 1
+        assert agent.invoke_structured_llm.await_args.args[2] is expected_schema
+
+    agent.invoke_llm.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -268,7 +370,7 @@ async def test_feature_dimension_failure_uses_local_fallback_and_continues():
 @pytest.mark.asyncio
 async def test_gtm_failure_uses_local_fallback_and_continues():
     agent = AnalysisAgent()
-    agent.invoke_llm = AsyncMock(side_effect=ValueError("invalid structured output"))
+    agent.invoke_structured_llm = AsyncMock(side_effect=ValueError("invalid structured output"))
     agent.emit_progress = AsyncMock()
     payload = {
         "target_product": "支付宝",

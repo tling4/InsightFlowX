@@ -191,17 +191,39 @@ class TestReportAgent:
         agent = ReportAgent()
         section = ReportSection(
             heading="成功与失败原因拆解",
-            level=2,
+            level=1,
             content="### 成功经验可复用拆解1. 第一项；2. 第二项。### 失败教训需规避拆解1. 第三项。",
             source_refs=[],
         )
 
         normalized = agent._normalize_section(section)
 
+        assert normalized.level == 2
         assert "###" not in normalized.content
         assert "**成功经验可复用拆解**\n\n1. 第一项" in normalized.content
         assert "\n\n2. 第二项" in normalized.content
         assert "**失败教训需规避拆解**\n\n1. 第三项" in normalized.content
+
+    def test_normalize_section_separates_standalone_bold_subheadings(self):
+        agent = ReportAgent()
+        section = ReportSection(
+            heading="产品定位判断",
+            level=2,
+            content=(
+                "定位判断正文。\n"
+                "**定位成立的核心支撑点**\n"
+                "1. 第一项。\n\n"
+                "2. 第二项。\n"
+                "**当前定位下的核心覆盖场景**\n"
+                "1. 场景一。"
+            ),
+            source_refs=[],
+        )
+
+        normalized = agent._normalize_section(section)
+
+        assert "定位判断正文。\n\n**定位成立的核心支撑点**\n\n1. 第一项。" in normalized.content
+        assert "2. 第二项。\n\n**当前定位下的核心覆盖场景**\n\n1. 场景一。" in normalized.content
 
     def test_normalize_mermaid_repairs_collapsed_fences_and_edges(self):
         agent = ReportAgent()

@@ -383,6 +383,39 @@ class TestReviewAgentRuleBased:
         assert "拼多多" in review.affected_entities
         assert "review_competitor_scope" in review.suggested_actions
 
+    def test_rule_based_review_does_not_require_sources_for_unlaunched_target(self):
+        agent = ReviewAgent()
+        state = {
+            "config": {
+                "target_product": "自研导购类产品",
+                "target_product_status": "pre_launch",
+                "product_category": "电商 / 零售 / 本地生活",
+                "competitors": ["返利网"],
+                "competitor_count": 1,
+            },
+            "report": {
+                "title": "Test Report",
+                "executive_summary": "summary here",
+                "full_markdown": "x" * 600,
+                "sections": [{"title": "s1"}, {"title": "s2"}, {"title": "s3"}, {"title": "s4"}],
+                "citations": [{"url": "http://example.com", "title": "ref"}],
+            },
+            "raw_data": {"返利网": [{"url": "http://fanli.example"}]},
+            "feature_matrix": {"matrix": [{"comparisons": [{"evidence_refs": [{"url": "http://fanli.example"}]}]}]},
+            "pricing_comparison": {"plans": [{"product": "返利网"}]},
+            "user_sentiment": {"per_product": {"返利网": {"neutral": 1}}},
+            "positioning_analysis": {"summary": "summary"},
+            "swot": {"strengths": ["strong brand"]},
+        }
+
+        review = agent._rule_based_review(state)
+
+        assert review.passed is True
+        assert next(check for check in review.checks if check.dimension == "source_coverage").passed is True
+        assert "未上线目标产品不参与来源覆盖校验" in next(
+            check.detail for check in review.checks if check.dimension == "source_coverage"
+        )
+
     def test_rule_based_review_failed_due_to_analysis_gaps(self):
         agent = ReviewAgent()
         state = {

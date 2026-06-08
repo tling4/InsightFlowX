@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import pytest
 
 from app.services.interview_service import (
@@ -7,6 +9,7 @@ from app.services.interview_service import (
     _clean_interview_response,
     _collect_interview_response,
 )
+from app.services.workflow_service import apply_auto_workflow_title, build_workflow_title
 
 
 class FakeInterviewAgent:
@@ -63,3 +66,25 @@ def test_clean_interview_response_falls_back_when_draft_reply_only_contains_conf
     cleaned = _clean_interview_response(response, has_config=True, is_complete=False)
 
     assert cleaned == CONFIG_UPDATED_FALLBACK
+
+
+def test_build_workflow_title_uses_target_product():
+    assert build_workflow_title({"target_product": "  自研导购返利类产品  "}) == "自研导购返利类产品 竞品分析"
+
+
+def test_auto_title_replaces_default_and_previous_auto_title():
+    workflow = SimpleNamespace(title="未命名分析", config={})
+
+    assert apply_auto_workflow_title(workflow, {"target_product": "返利网"}) is True
+    assert workflow.title == "返利网 竞品分析"
+
+    workflow.config = {"target_product": "返利网"}
+    assert apply_auto_workflow_title(workflow, {"target_product": "什么值得买"}) is True
+    assert workflow.title == "什么值得买 竞品分析"
+
+
+def test_auto_title_preserves_user_authored_title():
+    workflow = SimpleNamespace(title="618 导购产品决策分析", config={"target_product": "返利网"})
+
+    assert apply_auto_workflow_title(workflow, {"target_product": "什么值得买"}) is False
+    assert workflow.title == "618 导购产品决策分析"

@@ -59,7 +59,7 @@ REPORT_SYSTEM_PROMPT = """你是专业中文商业分析报告撰写助手。请
 - sections 每个对象必须包含 heading、level、content、source_refs。
 - source_refs 只能使用输入中真实存在的 URL；没有直接来源时使用空数组。
 - content 必须保留 Markdown 换行；标题、列表项和代码围栏禁止写在同一行。
-- content 中禁止使用 #、##、### 等标题语法；需要小标题时使用独占一行的 **粗体标题**。
+- content 中禁止使用 #、##、### 等标题语法；需要小标题时使用独占一行的 **粗体标题**，且标题前后各保留一个空行。
 - 编号列表的每一项必须独占一行，格式为“1. 内容”。
 - “关键发现”和“行动建议”必须可执行，避免空泛表述。
 - “关键流程图”的 content 必须使用独立 Mermaid 代码块，严格格式如下：
@@ -319,11 +319,12 @@ class ReportAgent(BaseAgent):
         """Normalize common model-produced Markdown formatting mistakes."""
         content = str(section.content or "").replace("\r\n", "\n").replace("\r", "\n").strip()
         content = self._normalize_inline_headings(content)
+        content = self._normalize_bold_subheadings(content)
         content = self._normalize_numbered_lists(content)
         if section.heading == "关键流程图":
             content = self._normalize_mermaid(content)
         content = re.sub(r"\n{3,}", "\n\n", content).strip()
-        return section.model_copy(update={"content": content})
+        return section.model_copy(update={"level": 2, "content": content})
 
     @staticmethod
     def _normalize_inline_headings(content: str) -> str:
@@ -343,6 +344,16 @@ class ReportAgent(BaseAgent):
             content,
         )
         return content
+
+    @staticmethod
+    def _normalize_bold_subheadings(content: str) -> str:
+        # A single Markdown newline is rendered as a space. Put standalone
+        # bold labels in their own paragraphs so they render as subheadings.
+        return re.sub(
+            r"(?m)^[ \t]*\*\*([^*\n]+)\*\*[ \t]*$",
+            lambda match: f"\n\n**{match.group(1).strip()}**\n\n",
+            content,
+        )
 
     @staticmethod
     def _normalize_numbered_lists(content: str) -> str:

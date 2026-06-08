@@ -11,6 +11,7 @@ from app.schemas.competitor import CompetitorInfo, SearchResult
 from app.schemas.search import SearchQueryPlan
 from app.agents.competitor_resolver import normalize_competitor_name, resolve_competitors
 from app.agents.query_planner import build_search_query_plan
+from app.schemas.workflow import target_product_is_launched
 
 
 MIN_PRODUCT_SOURCES = 6
@@ -37,8 +38,9 @@ class CollectionAgent(BaseAgent):
         competitor_names = config.get("competitors", []) or []
         competitor_count = config.get("competitor_count", len(competitor_names) or 5)
         competitor_names = competitor_names[:competitor_count]
+        include_target = target_product_is_launched(config)
         # 初始产品列表用于无 Tavily 的兜底路径；Tavily 可用时会先解析并替换竞品。
-        products = [p for p in [target, *competitor_names] if p]
+        products = [p for p in ([target] if include_target else []) + competitor_names if p]
 
         await self.log_and_broadcast(ctx, EventType.NODE_START, {
             "input_summary": {
@@ -126,7 +128,7 @@ class CollectionAgent(BaseAgent):
                 products = []
             else:
                 # 目标产品也参与搜索，确保分析时有自身数据做基线对比。
-                products = [p for p in [target, *competitor_names] if p]
+                products = [p for p in ([target] if include_target else []) + competitor_names if p]
                 raw_data = {product: [] for product in products}
                 await self.emit_progress(
                     ctx,

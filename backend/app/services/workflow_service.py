@@ -7,6 +7,44 @@ from app.exceptions import WorkflowNotFoundError, InvalidStateTransitionError, C
 from app.schemas.workflow import WorkflowConfig
 
 
+AUTO_TITLE_PLACEHOLDERS = {
+    "未命名分析",
+    "未命名竞品分析",
+    "新建竞品分析",
+}
+
+
+def build_workflow_title(config: WorkflowConfig | dict | None) -> str | None:
+    """Build a concise title from the confirmed analysis target."""
+    if isinstance(config, WorkflowConfig):
+        target_product = config.target_product
+    elif isinstance(config, dict):
+        target_product = config.get("target_product", "")
+    else:
+        target_product = ""
+    target_product = " ".join(str(target_product).split()).strip()
+    if not target_product:
+        return None
+    if target_product.endswith("竞品分析"):
+        return target_product[:255]
+    return f"{target_product} 竞品分析"[:255]
+
+
+def apply_auto_workflow_title(workflow: Workflow, config: WorkflowConfig | dict | None) -> bool:
+    """Apply an inferred title without overwriting a user-authored title."""
+    title = build_workflow_title(config)
+    if not title:
+        return False
+
+    current_title = " ".join(str(workflow.title or "").split()).strip()
+    previous_auto_title = build_workflow_title(workflow.config)
+    if current_title not in AUTO_TITLE_PLACEHOLDERS and current_title != previous_auto_title:
+        return False
+
+    workflow.title = title
+    return True
+
+
 async def create_workflow(db: AsyncSession, owner_id: uuid.UUID, title: str) -> Workflow:
     """创建工作流，初始状态为 configuring。"""
     workflow = Workflow(
@@ -46,6 +84,9 @@ async def confirm_interview(db: AsyncSession, workflow_id: str, owner_id: uuid.U
         raise InvalidStateTransitionError(workflow_id, workflow.status, "confirm")
     if not workflow.config or not workflow.config.get("target_product"):
         raise ConfigIncompleteError(workflow_id, missing_fields=["target_product"])
+    if apply_auto_workflow_title(workflow, workflow.config):
+        await db.commit()
+        await db.refresh(workflow)
     return workflow
 
 
@@ -66,9 +107,12 @@ async def start_workflow(
     if workflow.status != "configuring":
         raise InvalidStateTransitionError(workflow_id, workflow.status, "start")
     if override_config is not None:
+        apply_auto_workflow_title(workflow, override_config)
         workflow.config = override_config.model_dump(mode="json")
         # JSON 列原地赋值时 SQLAlchemy 不会自动检测变更，需手动标记
         flag_modified(workflow, "config")
+    else:
+        apply_auto_workflow_title(workflow, workflow.config)
     if not workflow.config or not workflow.config.get("target_product"):
         raise ConfigIncompleteError(workflow_id, missing_fields=["target_product"])
     workflow.status = "running"

@@ -258,7 +258,7 @@ async def invoke_structured_model(
     system_prompt: str,
     user_payload: dict[str, Any],
     schema: type[T],
-) -> T:
+) -> T | None:
     """Use the provider's native tool/function-calling response mode.
 
     Unlike ``invoke_json_model``, this path never extracts JSON from free-form
@@ -278,6 +278,8 @@ async def invoke_structured_model(
         ("system", system_prompt),
         ("human", json.dumps(user_payload, ensure_ascii=False, default=str)),
     ])
+    if result is None:
+        return None
     if isinstance(result, schema):
         return result
     return schema.model_validate(result)

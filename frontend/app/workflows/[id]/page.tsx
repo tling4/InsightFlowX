@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useParams } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@/lib/auth-context";
@@ -182,6 +182,7 @@ const QUICK_CARDS = [
 ];
 
 function InterviewView({ workflowId, token, workflow }: { workflowId: string; token: string; workflow: WorkflowDetail }) {
+  const qc = useQueryClient();
   const [config, setConfig] = useState<Partial<WorkflowConfig>>(() => {
     const sc = workflow.config as Partial<WorkflowConfig> | undefined;
     return sc && Object.keys(sc).length > 0 ? { ...sc } : {};
@@ -200,7 +201,6 @@ function InterviewView({ workflowId, token, workflow }: { workflowId: string; to
   const [inputValue, setInputValue] = useState("");
   const [newCompetitor, setNewCompetitor] = useState("");
   const [startError, setStartError] = useState<string | null>(null);
-  const qc = useQueryClient();
   const { sendMessage, isStreaming } = useInterviewStream({ workflowId, token });
   const startMutation = useStartWorkflow();
   const { data: history, isLoading: historyLoading, isPending: historyPending } = useInterviewHistory(workflowId);
@@ -277,6 +277,12 @@ function InterviewView({ workflowId, token, workflow }: { workflowId: string; to
         });
       },
       (incoming) => {
+        if (incoming.workflow_title) {
+          qc.setQueryData<WorkflowDetail | undefined>(["workflow", workflowId], (current) => (
+            current ? { ...current, title: incoming.workflow_title! } : current
+          ));
+          qc.invalidateQueries({ queryKey: ["workflows"] });
+        }
         if (incoming.extracted_config) {
           setConfig((prev) => {
             const merged = { ...prev, ...incoming.extracted_config };
@@ -907,6 +913,62 @@ function DagRuntimeView({ workflowId, token, workflow }: { workflowId: string; t
 /* ─── Terminal Tabs ─── */
 type TerminalTab = "interview" | "dag" | "report";
 
+const UNLAUNCHED_PRODUCT_MARKERS = [
+  "自研",
+  "未上线",
+  "尚未上线",
+  "还没上线",
+  "规划中",
+  "筹备中",
+  "概念产品",
+  "暂无产品",
+  "没有自己的产品",
+  "还没有自己的产品",
+];
+
+function targetProductIsLaunched(config: Partial<WorkflowConfig>) {
+  if (config.target_product_status) return config.target_product_status === "launched";
+  const text = [
+    config.target_product,
+    config.extra_requirements,
+    config.product_profile?.canonical_name,
+    config.product_profile?.market_segment,
+  ].filter(Boolean).join(" ");
+  return !UNLAUNCHED_PRODUCT_MARKERS.some((marker) => text.includes(marker));
+}
+
+function filterTargetFromComparisonArtifact(data: FeatureMatrix | undefined, config: Partial<WorkflowConfig>) {
+  if (!data || targetProductIsLaunched(config) || !config.target_product) return data;
+  return {
+    ...data,
+    matrix: data.matrix.map((item) => ({
+      ...item,
+      comparisons: item.comparisons?.filter((comparison) => comparison.product !== config.target_product),
+      products: Object.fromEntries(
+        Object.entries(item.products ?? {}).filter(([product]) => product !== config.target_product),
+      ),
+    })),
+  };
+}
+
+function filterTargetFromPricingArtifact(data: PricingComparison | undefined, config: Partial<WorkflowConfig>) {
+  if (!data || targetProductIsLaunched(config) || !config.target_product) return data;
+  return {
+    ...data,
+    plans: data.plans.filter((plan) => plan.product !== config.target_product),
+  };
+}
+
+function filterTargetFromSentimentArtifact(data: UserSentimentAnalysis | undefined, config: Partial<WorkflowConfig>) {
+  if (!data || targetProductIsLaunched(config) || !config.target_product) return data;
+  return {
+    ...data,
+    per_product: Object.fromEntries(
+      Object.entries(data.per_product).filter(([product]) => product !== config.target_product),
+    ),
+  };
+}
+
 function TerminalTabs({ workflowId, token, workflow }: { workflowId: string; token: string; workflow: WorkflowDetail }) {
   const [tab, setTab] = useState<TerminalTab>("report");
 
@@ -935,7 +997,7 @@ function TerminalTabs({ workflowId, token, workflow }: { workflowId: string; tok
         ))}
       </div>
       <div className="flex-1 min-h-0 relative">
-        {tab === "report" && <ReportView workflowId={workflowId} workflowStatus={workflow.status!} executionAttempt={workflow.execution_attempt} />}
+        {tab === "report" && <ReportView workflowId={workflowId} workflowStatus={workflow.status!} executionAttempt={workflow.execution_attempt} workflowConfig={workflow.config} />}
         {tab === "dag" && <DagRuntimeView workflowId={workflowId} token={token} workflow={workflow} />}
         {tab === "interview" && <InterviewView workflowId={workflowId} token={token} workflow={workflow} />}
       </div>
@@ -944,7 +1006,7 @@ function TerminalTabs({ workflowId, token, workflow }: { workflowId: string; tok
 }
 
 /* ─── Report View ─── */
-function ReportView({ workflowId, workflowStatus, executionAttempt }: { workflowId: string; workflowStatus: string; executionAttempt: number }) {
+function ReportView({ workflowId, workflowStatus, executionAttempt, workflowConfig }: { workflowId: string; workflowStatus: string; executionAttempt: number; workflowConfig: Partial<WorkflowConfig> }) {
   const { token } = useAuth();
   const { data: artifactList } = useArtifacts(workflowId, true, executionAttempt);
   const [fullArtifacts, setFullArtifacts] = useState<Record<string, unknown>>({});
@@ -953,6 +1015,11 @@ function ReportView({ workflowId, workflowStatus, executionAttempt }: { workflow
   const [showDownloadConfirm, setShowDownloadConfirm] = useState(false);
   const [showPdfConfirm, setShowPdfConfirm] = useState(false);
   const structuredRef = useRef<HTMLDivElement>(null);
+
+  const selectReportSection = useCallback((anchorId: string) => {
+    setActiveSection(anchorId);
+    document.getElementById(anchorId)?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, []);
 
   const reportArtifact = artifactList?.find((a) => a.artifact_type === "report");
   const reportId = reportArtifact?.id;
@@ -1002,9 +1069,18 @@ function ReportView({ workflowId, workflowStatus, executionAttempt }: { workflow
 
   const report = fullArtifacts.report as ReportOutput | undefined;
   const swot = fullArtifacts.swot_analysis as SWOTAnalysis | undefined;
-  const featureMatrix = fullArtifacts.feature_matrix as FeatureMatrix | undefined;
-  const pricingComparison = fullArtifacts.pricing_comparison as PricingComparison | undefined;
-  const userSentiment = fullArtifacts.user_sentiment as UserSentimentAnalysis | undefined;
+  const featureMatrix = useMemo(
+    () => filterTargetFromComparisonArtifact(fullArtifacts.feature_matrix as FeatureMatrix | undefined, workflowConfig),
+    [fullArtifacts.feature_matrix, workflowConfig],
+  );
+  const pricingComparison = useMemo(
+    () => filterTargetFromPricingArtifact(fullArtifacts.pricing_comparison as PricingComparison | undefined, workflowConfig),
+    [fullArtifacts.pricing_comparison, workflowConfig],
+  );
+  const userSentiment = useMemo(
+    () => filterTargetFromSentimentArtifact(fullArtifacts.user_sentiment as UserSentimentAnalysis | undefined, workflowConfig),
+    [fullArtifacts.user_sentiment, workflowConfig],
+  );
   const competitorRoleAnalysis = fullArtifacts.competitor_role_analysis as CompetitorRoleAnalysis | undefined;
 
   const [revisions, setRevisions] = useState<Array<{ number: number; passed: boolean; targetNode?: string; score?: number }>>([]);
@@ -1087,7 +1163,7 @@ function ReportView({ workflowId, workflowStatus, executionAttempt }: { workflow
                 <OutlineNav
                   sections={report.sections}
                   activeSection={activeSection}
-                  onSelect={setActiveSection}
+                  onSelect={selectReportSection}
                 />
               )}
             </aside>

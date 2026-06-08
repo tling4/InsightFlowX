@@ -97,4 +97,23 @@ class BaseAgent:
         if request_meta:
             payload.update(request_meta)
         await self.log_and_broadcast(ctx, EventType.LLM_REQUEST, payload)
-        return await invoke_structured_model(system_prompt, user_payload, schema)
+        result = await invoke_structured_model(system_prompt, user_payload, schema)
+        if result is not None:
+            return result
+
+        await self.emit_progress(
+            ctx,
+            stage="structured_output_fallback",
+            message="模型原生结构化输出为空，正在切换到 JSON 提取与修复路径。",
+            level="warning",
+        )
+
+        async def _on_token(token: str) -> None:
+            await self.stream_llm_token(ctx, token)
+
+        return await invoke_json_model(
+            system_prompt,
+            user_payload,
+            schema,
+            stream_callback=_on_token,
+        )

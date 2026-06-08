@@ -4,6 +4,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { ReportOutput } from "@/types/artifact";
 import { MermaidDiagram } from "@/components/report/mermaid-diagram";
+import { normalizeReportMarkdown, reportAnchorId } from "@/lib/report-navigation";
 
 interface Props {
   report: ReportOutput;
@@ -36,7 +37,8 @@ export function ReportViewer({ report, activeSection, onCitationClick }: Props) 
             );
           },
           h2: ({ children, className = "", ...props }) => {
-            const id = typeof children === "string" ? children : "";
+            const heading = typeof children === "string" ? children : String(children);
+            const id = reportAnchorId("section", heading);
             const isActive = activeSection === id;
             return (
               <h2
@@ -46,6 +48,20 @@ export function ReportViewer({ report, activeSection, onCitationClick }: Props) 
               >
                 {children}
               </h2>
+            );
+          },
+          strong: ({ children, className = "", ...props }) => {
+            const label = typeof children === "string" ? children : String(children);
+            const id = reportAnchorId("subsection", label);
+            const isActive = activeSection === id;
+            return (
+              <strong
+                {...props}
+                id={id}
+                className={`scroll-mt-20 ${isActive ? "text-emerald-300" : ""} ${className}`}
+              >
+                {children}
+              </strong>
             );
           },
           code: ({ className, children }) => {
@@ -62,7 +78,7 @@ export function ReportViewer({ report, activeSection, onCitationClick }: Props) 
           pre: ({ children }) => <>{children}</>,
         }}
       >
-        {report.full_markdown}
+        {normalizeReportMarkdown(report.full_markdown)}
       </ReactMarkdown>
     </div>
   );

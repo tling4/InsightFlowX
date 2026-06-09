@@ -13,7 +13,10 @@
     runtime = GraphRuntime(..., checkpointer=checkpointer)
 """
 
+import asyncio
 import logging
+import platform
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from app.config import get_settings
@@ -22,6 +25,17 @@ logger = logging.getLogger(__name__)
 
 _saver: Any | None = None
 _conn: Any | None = None
+
+
+def _is_proactor_loop() -> bool:
+    """检测当前运行的事件循环是否为 Windows ProactorEventLoop。"""
+    if platform.system() != "Windows":
+        return False
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return type(loop).__name__ == "ProactorEventLoop"
 
 
 async def init_checkpointer() -> None:
@@ -54,15 +68,65 @@ async def init_checkpointer() -> None:
         from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
     except Exception as exc:
         raise RuntimeError("langgraph-checkpoint-postgres is required to initialize the Postgres checkpointer") from exc
-    _conn = await psycopg.AsyncConnection.connect(
-        settings.DATABASE_URL_SYNC,
-        autocommit=True,
-        prepare_threshold=0,
-        row_factory=dict_row,
-    )
-    _saver = AsyncPostgresSaver(conn=_conn)
-    await _saver.setup()
+
+    if _is_proactor_loop():
+        logger.info("Windows ProactorEventLoop detected, connecting psycopg in dedicated SelectorEventLoop thread")
+        _conn, _saver = await _connect_in_selector_thread(settings, psycopg, dict_row, AsyncPostgresSaver)
+    else:
+        _conn = await psycopg.AsyncConnection.connect(
+            settings.DATABASE_URL_SYNC,
+            autocommit=True,
+            prepare_threshold=0,
+            row_factory=dict_row,
+        )
+        _saver = AsyncPostgresSaver(conn=_conn)
+        await _saver.setup()
     logger.info("Postgres checkpointer initialized")
+
+
+async def _connect_in_selector_thread(
+    settings, psycopg, dict_row, AsyncPostgresSaver
+) -> tuple[Any, Any]:
+    """在独立线程中用 SelectorEventLoop 建立 psycopg 连接。
+
+    uvicorn 在 Windows 非 reload 模式下硬编码使用 ProactorEventLoop
+    （见 uvicorn/loops/asyncio.py:asyncio_loop_factory），
+    而 psycopg 的 AsyncConnection.connect() 要求 SelectorEventLoop。
+    此函数将连接握手隔离在专用 SelectorEventLoop 线程中执行，
+    建立后的 AsyncConnection 可在任意事件循环中使用。
+    """
+    result: dict[str, Any] = {}
+    error: Exception | None = None
+
+    def _run():
+        nonlocal error
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            async def _setup():
+                conn = await psycopg.AsyncConnection.connect(
+                    settings.DATABASE_URL_SYNC,
+                    autocommit=True,
+                    prepare_threshold=0,
+                    row_factory=dict_row,
+                )
+                saver = AsyncPostgresSaver(conn=conn)
+                await saver.setup()
+                return conn, saver
+
+            conn, saver = loop.run_until_complete(_setup())
+            result["conn"] = conn
+            result["saver"] = saver
+        except Exception as e:
+            error = e
+
+    loop = asyncio.get_running_loop()
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        await loop.run_in_executor(pool, _run)
+
+    if error:
+        raise error
+    return result["conn"], result["saver"]
 
 
 async def get_checkpointer() -> Any:

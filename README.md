@@ -71,6 +71,11 @@ AI 驱动的竞品分析多 Agent 协作系统。
 - 用户注册/登录（bcrypt 密码哈希 + JWT 认证，24h 过期）
 - API 限流（登录 10 次/min/IP，注册 5 次/min/IP）
 
+<img src="images/注册.png" width="80%">
+
+<img src="images/登录.png" width="80%">
+
+
 **工作流管理**
 
 - 工作流 CRUD（创建、列表、详情、更新标题、删除）
@@ -84,12 +89,16 @@ AI 驱动的竞品分析多 Agent 协作系统。
 - Tavily 自动推荐竞品（竞品实体消歧 + 分类策略匹配 smartphone/drone/SaaS）
 - 智能完成检测——识别用户确认信号，自动判定访谈结束
 
+<img src="images/配置确认.png" width="80%">
+
 **DAG 工作流执行**
 
 - 10 节点 LangGraph StateGraph 编排（见 [4.1 节](#41-dag-工作流拓扑)）
 - `BackgroundTasks` 异步执行（无 Celery 依赖）
 - Postgres Checkpoint 持久化（`thread_id = "{workflow_id}:{run_id}"`，支持崩溃恢复）
 - 节点指数退避重试（最多 3 次，5 分钟超时，`GraphInterrupt` 不重试直接传播）
+
+<img src="images/运行1.png" width="80%">
 
 **信息采集**
 
@@ -115,6 +124,9 @@ AI 驱动的竞品分析多 Agent 协作系统。
 - Mermaid 流程图（关键流程可视化）
 - 内联引用列表与来源回溯
 
+<img src="images/结构化看板1.png" width="80%">
+<img src="images/分析报告1.png" width="80%">
+
 **质量审查**
 
 - LLM + 规则双路径：四维审查（completeness / accuracy / consistency / credibility）
@@ -127,6 +139,8 @@ AI 驱动的竞品分析多 Agent 协作系统。
 - 审查未通过时自动暂停，生成 `PauseRequest`（含原因、选项、建议路由）
 - 6 种决策动作：jump / approve / abort / drop_competitor / keep_with_insufficient_evidence / replace_competitor
 - 支持崩溃恢复（`/recover` 端点，从 LangGraph Checkpoint 恢复僵尸工作流）
+
+<img src="images/暂停.png" width="80%">
 
 **可观测性**
 
@@ -281,10 +295,6 @@ DAGents-InsightFlow/
 │   ├── .env.example                        # 环境变量模板
 │   └── .env                                # 实际环境变量（gitignore）
 │
-├── plan.md                                 # v2 原始设计方案（过程文档）
-├── new.md                                  # Runtime 架构迁移说明（过程文档）
-├── future-iterations.md                    # 后续迭代路线图（过程文档）
-├── ISSUES.md                               # 已知问题跟踪
 └── README.md                               # 本文件
 ```
 
@@ -692,8 +702,6 @@ curl http://localhost:8000/api/v1/artifacts/<artifact_id>/download \
 ```
 
 ### 6.6 后续迭代方向
-
-详见 [future-iterations.md](future-iterations.md)：
 
 - **P1 — Artifact First**：结构化 artifact 升级为核心产物，Markdown 降为展示层，所有关键结论绑定 EvidenceRef
 - **P2 — 分析层拆分**：6 个子分析模块独立契约 + 局部回退，当前 10 节点 DAG 已为此提供架构支撑

@@ -1,4 +1,4 @@
-# DAGents-InsightFlow
+# InsightFlowX
 
 AI 驱动的竞品分析多 Agent 协作系统。
 
